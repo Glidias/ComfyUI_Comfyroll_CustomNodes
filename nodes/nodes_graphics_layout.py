@@ -3,6 +3,7 @@
 # for ComfyUI                                                 https://github.com/comfyanonymous/ComfyUI
 #---------------------------------------------------------------------------------------------------------------------#
 
+import json
 import numpy as np
 import torch
 import os
@@ -20,6 +21,26 @@ JUSTIFY_OPTIONS = ["left", "center", "right"]
 PERSPECTIVE_OPTIONS = ["top", "bottom", "left", "right"]
 
 #---------------------------------------------------------------------------------------------------------------------#
+class CR_GetImageHash:
+
+    @classmethod
+    def INPUT_TYPES(s):
+
+        return {"required": {
+                "image": ("IMAGE",),
+               }
+    }
+
+    RETURN_TYPES = ("STRING", )
+    FUNCTION = "get_hash"
+    CATEGORY = icons.get("Comfyroll/Graphics/Layout")
+
+    def get_hash(self, image):
+
+        image_hash = get_tensor_hash(image)
+
+        return (image_hash, )
+
 class CR_PageLayout:
 
     @classmethod
@@ -71,6 +92,8 @@ class CR_PageLayout:
         font_color = get_color_values(font_color, font_color_hex, color_mapping)
         border_color = get_color_values(border_color, border_color_hex, color_mapping)
         bg_color = get_color_values(background_color, bg_color_hex, color_mapping)
+
+        main_panel_hash = get_tensor_hash(image_panel)
         main_panel = tensor2pil(image_panel)
 
         # Get image width and height
@@ -90,6 +113,8 @@ class CR_PageLayout:
 
         images = []
 
+        y_offset = 0
+
         ### Create text panels and add to images array
         if layout_options == "header" or layout_options == "header and footer":
             header_panel = text_panel(image_width, header_height, header_text,
@@ -101,6 +126,8 @@ class CR_PageLayout:
                                       align, header_align,
                                       rotation_angle, rotation_options)
             images.append(header_panel)
+            y_offset += header_panel.height
+
         images.append(main_panel)
 
         if layout_options == "footer" or layout_options == "header and footer":
@@ -120,9 +147,20 @@ class CR_PageLayout:
         if border_thickness > 0:
             combined_image = ImageOps.expand(combined_image, border_thickness, border_color)
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-page-layout"
+        offset_padding = border_thickness
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-page-layout"
+        show_help = json.dumps({
+            "width": combined_image.width,
+            "height": combined_image.height,
+            "images": [{ # main_panel image
+                "x": offset_padding,
+                "y": y_offset + offset_padding,
+                "width": image_width,
+                "height": image_height,
+                "images": main_panel_hash
+            }]
+        })
+        #show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-page-layout"
 
         return (pil2tensor(combined_image), show_help, )
 
@@ -173,7 +211,6 @@ class CR_SimpleTitles:
         bg_color = get_color_values(background_color, bg_color_hex, color_mapping)
 
         main_panel = tensor2pil(image)
-
         # Get image width and height
         image_width = main_panel.width
         image_height = main_panel.height
@@ -188,9 +225,7 @@ class CR_SimpleTitles:
         rotation_options = "image center"
         font_outline_thickness = 0
         font_outline_color = "black"
-
         images = []
-
         ### Create text panels and add to images array
         if header_height >0:
             header_panel = text_panel(image_width, header_height, header_text,
@@ -259,25 +294,47 @@ class CR_ImagePanel:
 
         border_color = get_color_values(border_color, border_color_hex, color_mapping)
 
+        image_tensor_hash_list = []
+
         # Convert PIL images to NumPy arrays
         images = []
         #image_1 = image_1[0, :, :, :]
         images.append(tensor2pil(image_1))
+        image_tensor_hash_list.append(image_1)
         if image_2 is not None:
             #image_2 = image_2[0, :, :, :]
             images.append(tensor2pil(image_2))
+            image_tensor_hash_list.append(image_2)
         if image_3 is not None:
             #image_3 = image_3[0, :, :, :]
             images.append(tensor2pil(image_3))
+            image_tensor_hash_list.append(image_3)
         if image_4 is not None:
             #image_4 = image_4[0, :, :, :]
             images.append(tensor2pil(image_4))
+            image_tensor_hash_list.append(image_4)
         # Apply borders and outlines to each image
         images = apply_outline_and_border(images, outline_thickness, outline_color, border_thickness, border_color)
 
-        combined_image = combine_images(images, layout_direction)
+        image_tensor_hash_list = [get_tensor_hash(image) for image in image_tensor_hash_list]
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-image-panel"
+        combined_image, combined_images_positions = combine_images2(images, layout_direction)
+        offset_padding = border_thickness + outline_thickness
+
+        show_help = json.dumps({
+            "width": combined_image.width,
+            "height": combined_image.height,
+            "images": [
+                {
+                    "x": coord[0] + offset_padding,
+                    "y": coord[1] + offset_padding,
+                    "width": images[idx].width - 2 * offset_padding,
+                    "height": images[idx].height - 2 * offset_padding,
+                    "images": image_tensor_hash_list[idx],
+                } for idx, coord in enumerate(combined_images_positions)
+            ]
+        })
+        # show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-image-panel"
 
         return (pil2tensor(combined_image), show_help, )
 
@@ -310,9 +367,9 @@ class CR_ImageGridPanel:
                    outline_thickness, outline_color,
                    max_columns, border_color_hex='#000000'):
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-image-grid-panel"
-
         border_color = get_color_values(border_color, border_color_hex, color_mapping)
+
+        image_tensor_hash_list = [get_tensor_hash(image) for image in images]
 
         # Convert PIL images
         images = [tensor2pil(image) for image in images]
@@ -320,9 +377,25 @@ class CR_ImageGridPanel:
         # Apply borders and outlines to each image
         images = apply_outline_and_border(images, outline_thickness, outline_color, border_thickness, border_color)
 
-        combined_image = make_grid_panel(images, max_columns)
+        combined_image, combined_images_positions = make_grid_panel2(images, max_columns)
+        offset_padding = border_thickness + outline_thickness
 
         image_out = pil2tensor(combined_image)
+
+        show_help = json.dumps({
+            "width": combined_image.width,
+            "height": combined_image.height,
+            "images": [
+                {
+                    "x": coord[0] + offset_padding,
+                    "y": coord[1] + offset_padding,
+                    "width": images[idx].width - 2 * offset_padding,
+                    "height": images[idx].height - 2 * offset_padding,
+                    "images": image_tensor_hash_list[idx],
+                } for idx, coord in enumerate(combined_images_positions)
+            ]
+        })
+        # show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-image-grid-panel"
 
         return (image_out, show_help, )
 
@@ -781,6 +854,7 @@ class CR_SelectISOSize:
 # For reference only, actual mappings are in __init__.py
 '''
 NODE_CLASS_MAPPINGS = {
+    "CR Get Image Hash": CR_GetImageHash,
     "CR Page Layout": CR_PageLayout,
     "CR Image Grid Panel": CR_ImageGridPanel,
     "CR Half Drop Panel": CR_HalfDropPanel,

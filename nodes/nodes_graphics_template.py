@@ -6,6 +6,7 @@
 import numpy as np
 import torch
 import os
+import json
 from PIL import Image, ImageDraw, ImageOps, ImageFont
 from server import PromptServer, BinaryEventTypes
 
@@ -311,12 +312,15 @@ class CR_ComicPanelTemplates:
                images=None, custom_panel_layout='G44',
                outline_color_hex='#000000', panel_color_hex='#000000', bg_color_hex='#000000'):
 
-        panels = []
+        image_panels = []
+        panels_tensor_hashes = []
+        images_tensor_hashes = []
         k = 0
         len_images = 0
 
         # Convert tensor images to PIL
         if images is not None:
+            images_tensor_hashes = [get_tensor_hash(image) for image in images]
             images = [tensor2pil(image) for image in images]
             len_images = len(images)
 
@@ -328,7 +332,6 @@ class CR_ComicPanelTemplates:
         # Create page and apply bg color
         size = (page_width - (2 * border_thickness), page_height - (2 * border_thickness))
         page = Image.new('RGB', size, bg_color)
-        draw = ImageDraw.Draw(page)
         if template == "custom":
             template = custom_panel_layout
 
@@ -344,10 +347,13 @@ class CR_ComicPanelTemplates:
                 # Column Loop
                 for j in range(columns):
                     # Draw the panel
-                    create_and_paste_panel(page, border_thickness, outline_thickness,
+                    p = create_and_paste_panel(page, border_thickness, outline_thickness,
                                            panel_width, panel_height, page.width,
                                            panel_color, bg_color, outline_color,
                                            images, i, j, k, len_images, reading_direction)
+                    if k < len_images:
+                        image_panels.append(p)
+                        panels_tensor_hashes.append(images_tensor_hashes[k])
                     k += 1
 
         elif first_char == "H":
@@ -358,10 +364,13 @@ class CR_ComicPanelTemplates:
                 panel_width = (page.width - (2 * columns * (border_thickness + outline_thickness))) // columns
                 for j in range(columns):
                     # Draw the panel
-                    create_and_paste_panel(page, border_thickness, outline_thickness,
+                    p = create_and_paste_panel(page, border_thickness, outline_thickness,
                                            panel_width, panel_height, page.width,
                                            panel_color, bg_color, outline_color,
                                            images, i, j, k, len_images, reading_direction)
+                    if k < len_images:
+                        image_panels.append(p)
+                        panels_tensor_hashes.append(images_tensor_hashes[k])
                     k += 1
 
         elif first_char == "V":
@@ -372,19 +381,37 @@ class CR_ComicPanelTemplates:
                 panel_height = (page.height  - (2 * rows * (border_thickness + outline_thickness))) // rows
                 for i in range(rows):
                     # Draw the panel
-                    create_and_paste_panel(page, border_thickness, outline_thickness,
+                    p = create_and_paste_panel(page, border_thickness, outline_thickness,
                                            panel_width, panel_height, page.width,
                                            panel_color, bg_color, outline_color,
                                            images, i, j, k, len_images, reading_direction)
+                    if k < len_images:
+                        image_panels.append(p)
+                        panels_tensor_hashes.append(images_tensor_hashes[k])
                     k += 1
 
         # Add a border to the page
         if border_thickness > 0:
             page = ImageOps.expand(page, border_thickness, bg_color)
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Template-Nodes#cr-comic-panel-templates"
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Template-Nodes#cr-comic-panel-templates"
+        panel_offset_padding = border_thickness + outline_thickness
+
+        show_help = json.dumps({
+            "x": border_thickness,
+            "y": border_thickness,
+            "width": page.width - 2 * border_thickness,
+            "height": page.height - 2 * border_thickness,
+            "images": [
+                {
+                    "x": panel_offset_padding + panel[0],
+                    "y": panel_offset_padding + panel[1],
+                    "width": panel[2] - 2 * panel_offset_padding,
+                    "height": panel[3] - 2 * panel_offset_padding,
+                } for panel in image_panels
+            ]
+        })
+        # show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Template-Nodes#cr-comic-panel-templates"
 
         return (pil2tensor(page), show_help, )
 

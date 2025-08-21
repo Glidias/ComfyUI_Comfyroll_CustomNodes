@@ -8,6 +8,7 @@ import torch
 import os
 import random
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance
+import hashlib
 from ..config import color_mapping
 
 font_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fonts")
@@ -20,6 +21,25 @@ def tensor2pil(image):
 
 def pil2tensor(image):
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
+
+
+def get_tensor_hash(tensor, precision=6) -> str:
+    """
+    Create a unique hash for a PyTorch image tensor.
+
+    Args:
+        tensor: PyTorch tensor of shape [B, H, W, C], float32, values in [0,1]
+        precision: Round to N decimal places to handle floating-point noise
+
+    Returns:
+        str: SHA-256 hash hexdigest
+    """
+    # Convert to numpy, round to avoid FP noise (e.g., 0.123456 vs 0.123457)
+    data = np.round(tensor.cpu().numpy().astype(np.float32), decimals=precision)
+
+    # Use hashlib to create a consistent hash
+    hash_obj = hashlib.sha256(data.tobytes())
+    return hash_obj.hexdigest()
 
 
 def align_text(align, img_height, text_height, text_pos_y, margins):
@@ -340,6 +360,43 @@ def combine_images(images, layout_direction='horizontal'):
     return combined_image
 
 
+def combine_images2(images, layout_direction='horizontal'):
+    """
+    Combine a list of PIL Image objects either horizontally or vertically.
+
+    Args:
+    images (list of PIL.Image.Image): List of PIL Image objects to combine.
+    layout_direction (str): 'horizontal' for horizontal layout, 'vertical' for vertical layout.
+
+    Returns:
+    PIL.Image.Image: Combined image and a list of positions where each image is pasted.
+    positions (list of tuples): List of (x, y) positions for each image in the combined image.
+    @returns: (PIL.Image.Image, list of tuples)
+    """
+
+    if layout_direction == 'horizontal':
+        combined_width = sum(image.width for image in images)
+        combined_height = max(image.height for image in images)
+    else:
+        combined_width = max(image.width for image in images)
+        combined_height = sum(image.height for image in images)
+
+    combined_image = Image.new('RGB', (combined_width, combined_height))
+
+    positions = []
+    x_offset = 0
+    y_offset = 0  # Initialize y_offset for vertical layout
+    for image in images:
+        combined_image.paste(image, (x_offset, y_offset))
+        positions.append((x_offset, y_offset))
+        if layout_direction == 'horizontal':
+            x_offset += image.width
+        else:
+            y_offset += image.height
+
+    return (combined_image, positions)
+
+
 def apply_outline_and_border(images, outline_thickness, outline_color, border_thickness, border_color):
     for i, image in enumerate(images):
         # Apply the outline
@@ -398,8 +455,6 @@ def crop_and_resize_image(image, target_width, target_height):
 
     return cropped_image
 
-    return cropped_image
-
 def create_and_paste_panel(page, border_thickness, outline_thickness,
                            panel_width, panel_height, page_width,
                            panel_color, bg_color, outline_color,
@@ -414,9 +469,11 @@ def create_and_paste_panel(page, border_thickness, outline_thickness,
     panel = ImageOps.expand(panel, border=border_thickness, fill=bg_color)
     new_panel_width, new_panel_height = panel.size
     if reading_direction == "right to left":
-        page.paste(panel, (page_width - (j + 1) * new_panel_width, i * new_panel_height))
+        p = (page_width - (j + 1) * new_panel_width, i * new_panel_height)
     else:
-        page.paste(panel, (j * new_panel_width, i * new_panel_height))
+        p = (j * new_panel_width, i * new_panel_height)
+    page.paste(panel, p)
+    return (p[0], p[1], new_panel_width, new_panel_height)
 
 
 def reduce_opacity(img, opacity):
@@ -475,6 +532,29 @@ def make_grid_panel(images, max_columns):
             y_offset += image.height
 
     return combined_image
+
+
+def make_grid_panel2(images, max_columns):
+     # Calculate dimensions for the grid
+    num_images = len(images)
+    num_rows = (num_images - 1) // max_columns + 1
+    combined_width = max(image.width for image in images) * min(max_columns, num_images)
+    combined_height = max(image.height for image in images) * num_rows
+
+    combined_image = Image.new('RGB', (combined_width, combined_height))
+
+    positions = []
+    x_offset, y_offset = 0, 0  # Initialize offsets
+    for image in images:
+        combined_image.paste(image, (x_offset, y_offset))
+        positions.append((x_offset, y_offset))
+        x_offset += image.width
+        if x_offset >= max_columns * image.width:
+            x_offset = 0
+            y_offset += image.height
+
+    return (combined_image, positions)
+
 
 
 def interpolate_color(color0, color1, t):
