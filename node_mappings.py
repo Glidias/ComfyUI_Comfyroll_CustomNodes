@@ -157,6 +157,7 @@ NODE_CLASS_MAPPINGS = {
     "CR Color Tint": CR_ColorTint,
     "CR Vignette Filter": CR_VignetteFilter,
     ### Graphics Layout
+    "CR Flattened Layout Regions": CR_FlattenedLayoutRegionsJSON,
     "CR Image Hash": CR_GetImageHash,
     "CR Page Layout": CR_PageLayout,
     "CR Image Panel": CR_ImagePanel,

@@ -41,6 +41,151 @@ class CR_GetImageHash:
 
         return (image_hash, )
 
+
+"""
+example data_json nested tree layout structure
+{  # eg. ComicPanelTemplateLayout or some other Container layout
+ Width: 512,
+ Height: 512,
+ X: 15,
+ Y: 15,
+ Images: [{   # Images in comic panel / conatiner layout as list
+       X: 5
+       Y: 5
+       Width: 32,
+       Height: 32,
+       Images: {  # nested injected (via string replace of sha256 image hash) of:
+           # ComicPaneltemplateLayout or some other Container layout
+           # where dimensions and positioning is to match parent width and height
+                Width: 512,
+                Height: 512,
+                X: 10,
+                Y: 10
+                Images: [
+                    {...},
+                    ..
+                ]
+            }
+   }, {...2nd image... }, {...3rd image...}, ..]
+}
+"""
+
+"""
+Converts a JSON layout tree structure into a flattened list of image regions with their global coordinates and dimensions.
+"""
+class CR_FlattenedLayoutRegionsJSON:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "data_json": ("STRING", {"multiline": True, "default": '{}'}),
+            },
+            "optional": {
+                "region_keys": ("STRING", {"multiline": True, "default": ""}),
+                "preview_image": ("IMAGE",),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "IMAGE", )
+    RETURN_NAMES = ("STRING", "preview_image", )
+    FUNCTION = "get_layout_regions"
+    CATEGORY = icons.get("Comfyroll/Graphics/Layout")
+
+    def get_layout_regions(self, data_json, region_keys=None, preview_image=None):
+        regions = []
+
+        region_keys = region_keys.strip()
+        if region_keys: # filter hash by region keys
+            region_keys = set(region_keys.strip().splitlines()) if not isinstance(region_keys, list) else set(region_keys)
+        else: # no filtering by region keys
+            region_keys = None
+
+        try:
+            data_json = json.loads(data_json)
+        except json.JSONDecodeError:
+            raise ValueError("Invalid JSON format in data_json.")
+
+        if not isinstance(data_json, dict):
+            raise ValueError("data_json must be a JSON object.")
+
+        # iterative depth first search recurse to collect regions
+        stack = [data_json]
+
+        # 0,1: accumiulated global x and y offset positions for current item in stack,
+        # 2,3: globally-projected width and height value for current item in stack
+        stack_origins = [(0, 0, -1, -1)]
+
+        while stack:
+            current = stack.pop()
+            origin = stack_origins.pop()
+
+            # local width and height values
+            width = current.get("width", -1)
+            height = current.get("height", -1)
+            # localToGlobal scale x and  scale y values to be determined
+            scalex = 1
+            scaley = 1
+            # determine localToGlobal scales
+            # convert local width and height values to global width and height values if needed
+            if origin[2] >= 0 and width >= 0 and origin[2] != width :
+                scalex = origin[2] / width
+                width *= scalex
+            if origin[3] >= 0 and height >= 0 and origin[3] != height:
+                scaley = origin[3] / height
+                height *= scaley
+
+            # global x and y coordinate (top-left)
+            cx = current.get("x", 0)*scalex + origin[0]
+            cy = current.get("y", 0)*scaley + origin[1]
+
+            images = current.get("images")
+            if images:
+                if isinstance(images, list):
+                    for image in images:
+                        if not isinstance(image, dict):
+                            raise ValueError("Each image in 'images' list array must be a dictionary")
+                        stack.append(image)
+                        iwidth = image.get("width", -1)
+                        iheight = image.get("height", -1)
+                        stack_origins.append((
+                            cx, cy,
+                            iwidth*scalex if iwidth >= 0 else -1,
+                            iheight*scaley if iheight >= 0 else -1
+                            )
+                        )
+
+                elif isinstance(images, dict): # scaled nested region within current space
+                    stack.append(images)
+                    stack_origins.append((cx, cy, width, height))
+                else: # assumed string leaf sha256 hash of final image
+                    if region_keys is None or images in region_keys:
+                        regions.append({
+                            "x": cx,
+                            "y": cy,
+                            "width": width,
+                            "height": height,
+                            "data": images
+                        })
+
+        if preview_image is not None:
+            # display red outlines for all the regions in preview_image
+            preview_image = tensor2pil(preview_image)
+            draw = ImageDraw.Draw(preview_image)
+            for region in regions:
+                x = region["x"]
+                y = region["y"]
+                w = region["width"]
+                h = region["height"]
+                draw.rectangle([x, y, x + w, y + h], outline="red", width=1)
+            preview_image = pil2tensor(preview_image)
+        else:
+            # dummy 1x1 preview image
+            preview_image = Image.new('RGB', (1, 1), color=(0, 0, 0))
+            preview_image = pil2tensor(preview_image)
+
+        return (json.dumps(regions), preview_image,)
+
+
 class CR_PageLayout:
 
     @classmethod
@@ -854,7 +999,6 @@ class CR_SelectISOSize:
 # For reference only, actual mappings are in __init__.py
 '''
 NODE_CLASS_MAPPINGS = {
-    "CR Get Image Hash": CR_GetImageHash,
     "CR Page Layout": CR_PageLayout,
     "CR Image Grid Panel": CR_ImageGridPanel,
     "CR Half Drop Panel": CR_HalfDropPanel,
