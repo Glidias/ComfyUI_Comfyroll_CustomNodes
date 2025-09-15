@@ -39,7 +39,7 @@ class CR_GetImageHash:
 
         image_hash = get_tensor_hash(image)
 
-        return (image_hash, )
+        return (f'"{image_hash}"', )
 
 
 """
