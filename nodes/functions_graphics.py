@@ -432,48 +432,96 @@ def hex_to_rgb(hex_color):
     return (r, g, b)
 
 
-def crop_and_resize_image(image, target_width, target_height):
-    width, height = image.size
-    aspect_ratio = width / height
-    target_aspect_ratio = target_width / target_height
-
-    if aspect_ratio > target_aspect_ratio:
-        # Crop the image's width to match the target aspect ratio
-        crop_width = int(height * target_aspect_ratio)
-        crop_height = height
-        left = (width - crop_width) // 2
-        top = 0
-    else:
-        # Crop the image's height to match the target aspect ratio
-        crop_height = int(width / target_aspect_ratio)
-        crop_width = width
-        left = 0
-        top = (height - crop_height) // 2
-
-    # Perform the center cropping
-    cropped_image = image.crop((left, top, left + crop_width, top + crop_height))
-
-    return cropped_image
-
 def create_and_paste_panel(page, border_thickness, outline_thickness,
                            panel_width, panel_height, page_width,
                            panel_color, bg_color, outline_color,
-                           images, i, j, k, len_images, reading_direction):
+                           images, i, j, k, len_images, reading_direction,
+                           fit_mode="cover", position_mode="center"):
+    """
+    Creates a comic panel, optionally pastes an image with advanced fitting logic,
+    and returns panel position + inner image bounds for provenance tracking.
+
+    Args:
+        All layout parameters...
+        fit_mode: "cover" (legacy), "contain", "scale-down"
+        position_mode: "center", "left_bias", "right_bias" (with subtle jitter)
+
+    Returns:
+        (x, y, w, h [, ox, oy, iw, ih]) - panel pos on page, plus optional image-in-panel box
+    """
+    # Create base panel canvas
     panel = Image.new("RGB", (panel_width, panel_height), panel_color)
+    img_in_panel_box = None  # Will store (ox, oy, iw, ih) if image placed
+
     if k < len_images:
         img = images[k]
-        image = crop_and_resize_image(img, panel_width, panel_height)
-        image.thumbnail((panel_width, panel_height), Image.Resampling.LANCZOS)
-        panel.paste(image, (0, 0))
+        iw, ih = img.size
+
+        if fit_mode == "cover":
+            # Scale up then center crop to fill panel exactly
+            scale = max(panel_width / iw, panel_height / ih)
+            new_w = int(iw * scale)
+            new_h = int(ih * scale)
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+            left = (new_w - panel_width) // 2
+            top = (new_h - panel_height) // 2
+            cropped = resized.crop((left, top, left + panel_width, top + panel_height))
+            panel.paste(cropped, (0, 0))
+            img_in_panel_box = (0, 0, panel_width, panel_height)
+
+        else:  # "contain" or "scale-down"
+            # Downscale to fit within panel, preserving aspect ratio
+            scale = min(panel_width / iw, panel_height / ih)
+            if fit_mode == "scale-down":
+                scale = min(scale, 1.0)  # Never upscale
+            new_w = int(iw * scale)
+            new_h = int(ih * scale)
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+
+            # Compute offset based on position mode
+            free_x = panel_width - new_w
+            free_y = panel_height - new_h
+
+            rng = random.Random(k)  # Deterministic per panel index
+            jitter_x = int(free_x * 0.1 * rng.random()) if free_x > 0 else 0
+            jitter_y = int(free_y * 0.1 * rng.random()) if free_y > 0 else 0
+
+            if position_mode == "center":
+                ox = free_x // 2
+                oy = free_y // 2
+            elif position_mode == "left_bias":
+                ox = jitter_x
+                oy = jitter_y if rng.random() < 0.5 else free_y - jitter_y
+            elif position_mode == "right_bias":
+                ox = free_x - jitter_x
+                oy = jitter_y if rng.random() < 0.5 else free_y - jitter_y
+            else:  # fallback
+                ox = oy = 0
+
+            panel.paste(resized, (ox, oy))
+            img_in_panel_box = (ox, oy, new_w, new_h)
+
+    # Apply borders
     panel = ImageOps.expand(panel, border=outline_thickness, fill=outline_color)
     panel = ImageOps.expand(panel, border=border_thickness, fill=bg_color)
-    new_panel_width, new_panel_height = panel.size
+    final_w, final_h = panel.size
+
+    # Compute paste position on page
     if reading_direction == "right to left":
-        p = (page_width - (j + 1) * new_panel_width, i * new_panel_height)
+        x = page_width - (j + 1) * final_w
+        y = i * final_h
     else:
-        p = (j * new_panel_width, i * new_panel_height)
-    page.paste(panel, p)
-    return (p[0], p[1], new_panel_width, new_panel_height)
+        x = j * final_w
+        y = i * final_h
+
+    page.paste(panel, (x, y))
+
+    # Build return tuple: (x, y, w, h) + optional (img_x, img_y, img_w, img_h)
+    result = [x, y, final_w, final_h]
+    if img_in_panel_box:
+        result.extend(img_in_panel_box)
+
+    return tuple(result)
 
 
 def reduce_opacity(img, opacity):

@@ -263,13 +263,29 @@ class CR_SimpleBanner:
         return (images_out, show_help, )
 
 #---------------------------------------------------------------------------------------------------------------------#
+# For border color detection (optional)
+def get_border_color(pil_img, margin=5):
+    if pil_img.mode != 'RGB':
+        pil_img = pil_img.convert('RGB')
+    pixels = np.array(pil_img).astype(np.float32)
+    h, w = pixels.shape[:2]
+    margin = max(1, min(margin, h // 4, w // 4))
+
+    top = pixels[:margin, :].reshape(-1, 3)
+    bottom = pixels[-margin:, :].reshape(-1, 3)
+    left = pixels[margin:-margin, :margin].reshape(-1, 3)
+    right = pixels[margin:-margin, -margin:].reshape(-1, 3)
+
+    combined = np.concatenate([top, bottom, left, right], axis=0)
+    avg = np.mean(combined, axis=0)
+    return tuple(int(c) for c in avg)
+
+
 class CR_ComicPanelTemplates:
 
     @classmethod
     def INPUT_TYPES(s):
-
         directions = ["left to right", "right to left"]
-
         templates = ["custom",
                      "G22", "G33",
                      "H2", "H3",
@@ -281,6 +297,9 @@ class CR_ComicPanelTemplates:
                      "V21", "V23",
                      "V31", "V32"]
 
+        fit_modes = ["contain", "cover", "scale-down"]
+        position_modes = ["center", "left_bias", "right_bias", "random_jitter"]
+
         return {"required": {
                     "page_width": ("INT", {"default": 512, "min": 8, "max": 4096}),
                     "page_height": ("INT", {"default": 512, "min": 8, "max": 4096}),
@@ -291,6 +310,8 @@ class CR_ComicPanelTemplates:
                     "outline_color": (COLORS,),
                     "panel_color": (COLORS,),
                     "background_color": (COLORS,),
+                    "fit_mode": (fit_modes, {"default": "cover"}),
+                    "position_mode": (position_modes, {"default": "center"}),
                },
                 "optional": {
                     "images": ("IMAGE",),
@@ -301,14 +322,15 @@ class CR_ComicPanelTemplates:
                }
     }
 
-    RETURN_TYPES = ("IMAGE", "STRING", )
-    RETURN_NAMES = ("image", "show_help", )
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("image", "show_help")
     FUNCTION = "layout"
     CATEGORY = icons.get("Comfyroll/Graphics/Template")
 
     def layout(self, page_width, page_height, template, reading_direction,
                border_thickness, outline_thickness,
                outline_color, panel_color, background_color,
+               fit_mode, position_mode,
                images=None, custom_panel_layout='G44',
                outline_color_hex='#000000', panel_color_hex='#000000', bg_color_hex='#000000'):
 
@@ -318,13 +340,13 @@ class CR_ComicPanelTemplates:
         k = 0
         len_images = 0
 
-        # Convert tensor images to PIL
+        # Convert tensor images to PIL + extract hashes
         if images is not None:
             images_tensor_hashes = [get_tensor_hash(image) for image in images]
             images = [tensor2pil(image) for image in images]
             len_images = len(images)
 
-        # Get RGB values for the text and background colors
+        # Get RGB values for colors
         outline_color = get_color_values(outline_color, outline_color_hex, color_mapping)
         panel_color = get_color_values(panel_color, panel_color_hex, color_mapping)
         bg_color = get_color_values(background_color, bg_color_hex, color_mapping)
@@ -335,24 +357,24 @@ class CR_ComicPanelTemplates:
         if template == "custom":
             template = custom_panel_layout
 
-        # Calculate panel positions and add to bg image
+        # === PANEL LAYOUT LOGIC (RESTORED) ===
         first_char = template[0]
         if first_char == "G":
             rows = int(template[1])
             columns = int(template[2])
             panel_width = (page.width - (2 * columns * (border_thickness + outline_thickness))) // columns
             panel_height = (page.height  - (2 * rows * (border_thickness + outline_thickness))) // rows
-            # Row loop
             for i in range(rows):
-                # Column Loop
                 for j in range(columns):
-                    # Draw the panel
-                    p = create_and_paste_panel(page, border_thickness, outline_thickness,
-                                           panel_width, panel_height, page.width,
-                                           panel_color, bg_color, outline_color,
-                                           images, i, j, k, len_images, reading_direction)
+                    p = create_and_paste_panel(
+                        page, border_thickness, outline_thickness,
+                        panel_width, panel_height, page.width,
+                        panel_color, bg_color, outline_color,
+                        images, i, j, k, len_images, reading_direction,
+                        fit_mode, position_mode
+                    )
                     if k < len_images:
-                        image_panels.append(p)
+                        image_panels.append(p[:4])  # (x, y, w, h)
                         panels_tensor_hashes.append(images_tensor_hashes[k])
                     k += 1
 
@@ -363,13 +385,15 @@ class CR_ComicPanelTemplates:
                 columns = int(template[i+1])
                 panel_width = (page.width - (2 * columns * (border_thickness + outline_thickness))) // columns
                 for j in range(columns):
-                    # Draw the panel
-                    p = create_and_paste_panel(page, border_thickness, outline_thickness,
-                                           panel_width, panel_height, page.width,
-                                           panel_color, bg_color, outline_color,
-                                           images, i, j, k, len_images, reading_direction)
+                    p = create_and_paste_panel(
+                        page, border_thickness, outline_thickness,
+                        panel_width, panel_height, page.width,
+                        panel_color, bg_color, outline_color,
+                        images, i, j, k, len_images, reading_direction,
+                        fit_mode, position_mode
+                    )
                     if k < len_images:
-                        image_panels.append(p)
+                        image_panels.append(p[:4])
                         panels_tensor_hashes.append(images_tensor_hashes[k])
                     k += 1
 
@@ -380,24 +404,28 @@ class CR_ComicPanelTemplates:
                 rows = int(template[j+1])
                 panel_height = (page.height  - (2 * rows * (border_thickness + outline_thickness))) // rows
                 for i in range(rows):
-                    # Draw the panel
-                    p = create_and_paste_panel(page, border_thickness, outline_thickness,
-                                           panel_width, panel_height, page.width,
-                                           panel_color, bg_color, outline_color,
-                                           images, i, j, k, len_images, reading_direction)
+                    p = create_and_paste_panel(
+                        page, border_thickness, outline_thickness,
+                        panel_width, panel_height, page.width,
+                        panel_color, bg_color, outline_color,
+                        images, i, j, k, len_images, reading_direction,
+                        fit_mode, position_mode
+                    )
                     if k < len_images:
-                        image_panels.append(p)
+                        image_panels.append(p[:4])
                         panels_tensor_hashes.append(images_tensor_hashes[k])
                     k += 1
 
-        # Add a border to the page
+        # Add outer border
         if border_thickness > 0:
-            page = ImageOps.expand(page, border_thickness, bg_color)
-
+            page = ImageOps.expand(page, border=border_thickness, fill=bg_color)
 
         panel_offset_padding = border_thickness + outline_thickness
 
-        show_help = json.dumps({
+        # === BUILD show_help WITH YOUR SCHEMA ===
+        full_fitting = (fit_mode == "cover")  # Only "cover" uses scalar hash
+
+        show_help_data = {
             "x": border_thickness,
             "y": border_thickness,
             "width": page.width - 2 * border_thickness,
@@ -408,13 +436,23 @@ class CR_ComicPanelTemplates:
                     "y": panel_offset_padding + panel[1],
                     "width": panel[2] - 2 * panel_offset_padding,
                     "height": panel[3] - 2 * panel_offset_padding,
-                    "images": panels_tensor_hashes[i]
-                } for panel in image_panels
+                    "images": (
+                        panels_tensor_hashes[i] if full_fitting else [{
+                            "x": p[4] if len(p) > 4 else 0,
+                            "y": p[5] if len(p) > 5 else 0,
+                            "width": p[6] if len(p) > 6 else (panel[2] - 2 * panel_offset_padding),
+                            "height": p[7] if len(p) > 7 else (panel[3] - 2 * panel_offset_padding),
+                            "images": panels_tensor_hashes[i]
+                        }]
+                    )
+                }
+                for i, panel in enumerate(image_panels)
             ]
-        })
-        # show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Template-Nodes#cr-comic-panel-templates"
+        }
 
-        return (pil2tensor(page), show_help, )
+        show_help = json.dumps(show_help_data, separators=(',', ':'))
+
+        return (pil2tensor(page), show_help)
 
 #---------------------------------------------------------------------------------------------------------------------#
 class CR_SimpleImageCompare:
