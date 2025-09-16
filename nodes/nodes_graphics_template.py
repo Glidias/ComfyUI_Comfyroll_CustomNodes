@@ -408,6 +408,7 @@ class CR_ComicPanelTemplates:
                     "y": panel_offset_padding + panel[1],
                     "width": panel[2] - 2 * panel_offset_padding,
                     "height": panel[3] - 2 * panel_offset_padding,
+                    "images": panels_tensor_hashes[i]
                 } for panel in image_panels
             ]
         })
