@@ -432,57 +432,86 @@ def hex_to_rgb(hex_color):
     return (r, g, b)
 
 
+# === HELPER FUNCTIONS ===
+
+def get_image_average_color(pil_img):
+    """Returns average RGB color of entire image."""
+    if pil_img.mode != 'RGB':
+        pil_img = pil_img.convert('RGB')
+    img_small = pil_img.copy()
+    img_small.thumbnail((100, 100), Image.Resampling.LANCZOS)
+    arr = np.array(img_small).astype(np.float32)
+    avg = np.mean(arr.reshape(-1, 3), axis=0)
+    return tuple(int(c) for c in avg)
+
+def get_border_color(pil_img, margin=5):
+    """Returns average color of outer edge pixels."""
+    if pil_img.mode != 'RGB':
+        pil_img = pil_img.convert('RGB')
+    w, h = pil_img.size
+    margin = max(1, min(margin, w // 8, h // 8))
+    arr = np.array(pil_img).astype(np.float32)
+
+    top = arr[:margin, :, :].reshape(-1, 3)
+    bottom = arr[-margin:, :, :].reshape(-1, 3)
+    left = arr[margin:-margin, :margin, :].reshape(-1, 3)
+    right = arr[margin:-margin, -margin:, :].reshape(-1, 3)
+
+    combined = np.concatenate([top, bottom, left, right], axis=0)
+    avg = np.mean(combined, axis=0)
+    return tuple(int(c) for c in avg)
+
+
 def create_and_paste_panel(page, border_thickness, outline_thickness,
                            panel_width, panel_height, page_width,
                            panel_color, bg_color, outline_color,
                            images, i, j, k, len_images, reading_direction,
-                           fit_mode="cover", position_mode="center"):
+                           fit_mode="cover", position_mode="center",
+                           bg_color_source="solid"):
     """
-    Creates a comic panel, optionally pastes an image with advanced fitting logic,
-    and returns panel position + inner image bounds for provenance tracking.
-
-    Args:
-        All layout parameters...
-        fit_mode: "cover" (legacy), "contain", "scale-down"
-        position_mode: "center", "left_bias", "right_bias" (with subtle jitter)
-
-    Returns:
-        (x, y, w, h [, ox, oy, iw, ih]) - panel pos on page, plus optional image-in-panel box
+    Creates a panel with smart fitting, optional bias/jitter,
+    and returns both panel position + inner image placement.
     """
-    # Create base panel canvas
-    panel = Image.new("RGB", (panel_width, panel_height), panel_color)
-    img_in_panel_box = None  # Will store (ox, oy, iw, ih) if image placed
+    # Determine actual panel background color
+    actual_panel_color = panel_color
+    if k < len_images:
+        img = images[k]
+        if bg_color_source == "image_average":
+            actual_panel_color = get_image_average_color(img)
+        elif bg_color_source == "image_border_avg":
+            actual_panel_color = get_border_color(img, margin=5)
+
+    # Create base panel
+    panel = Image.new("RGB", (panel_width, panel_height), actual_panel_color)
+    img_in_panel_box = None  # (ox, oy, iw, ih)
 
     if k < len_images:
         img = images[k]
         iw, ih = img.size
 
         if fit_mode == "cover":
-            # Scale up then center crop to fill panel exactly
             scale = max(panel_width / iw, panel_height / ih)
             new_w = int(iw * scale)
             new_h = int(ih * scale)
             resized = img.resize((new_w, new_h), Image.LANCZOS)
-            left = (new_w - panel_width) // 2
-            top = (new_h - panel_height) // 2
-            cropped = resized.crop((left, top, left + panel_width, top + panel_height))
+            ox = (new_w - panel_width) // 2
+            oy = (new_h - panel_height) // 2
+            cropped = resized.crop((ox, oy, ox + panel_width, oy + panel_height))
             panel.paste(cropped, (0, 0))
             img_in_panel_box = (0, 0, panel_width, panel_height)
 
         else:  # "contain" or "scale-down"
-            # Downscale to fit within panel, preserving aspect ratio
             scale = min(panel_width / iw, panel_height / ih)
             if fit_mode == "scale-down":
-                scale = min(scale, 1.0)  # Never upscale
+                scale = min(scale, 1.0)
             new_w = int(iw * scale)
             new_h = int(ih * scale)
             resized = img.resize((new_w, new_h), Image.LANCZOS)
 
-            # Compute offset based on position mode
             free_x = panel_width - new_w
             free_y = panel_height - new_h
 
-            rng = random.Random(k)  # Deterministic per panel index
+            rng = Random(k)
             jitter_x = int(free_x * 0.1 * rng.random()) if free_x > 0 else 0
             jitter_y = int(free_y * 0.1 * rng.random()) if free_y > 0 else 0
 
@@ -495,7 +524,10 @@ def create_and_paste_panel(page, border_thickness, outline_thickness,
             elif position_mode == "right_bias":
                 ox = free_x - jitter_x
                 oy = jitter_y if rng.random() < 0.5 else free_y - jitter_y
-            else:  # fallback
+            elif position_mode == "random_jitter":
+                ox = rng.randint(0, free_x) if free_x > 0 else 0
+                oy = rng.randint(0, free_y) if free_y > 0 else 0
+            else:
                 ox = oy = 0
 
             panel.paste(resized, (ox, oy))
@@ -516,11 +548,9 @@ def create_and_paste_panel(page, border_thickness, outline_thickness,
 
     page.paste(panel, (x, y))
 
-    # Build return tuple: (x, y, w, h) + optional (img_x, img_y, img_w, img_h)
     result = [x, y, final_w, final_h]
     if img_in_panel_box:
         result.extend(img_in_panel_box)
-
     return tuple(result)
 
 

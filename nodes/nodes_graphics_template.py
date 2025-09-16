@@ -263,22 +263,6 @@ class CR_SimpleBanner:
         return (images_out, show_help, )
 
 #---------------------------------------------------------------------------------------------------------------------#
-# For border color detection (optional)
-def get_border_color(pil_img, margin=5):
-    if pil_img.mode != 'RGB':
-        pil_img = pil_img.convert('RGB')
-    pixels = np.array(pil_img).astype(np.float32)
-    h, w = pixels.shape[:2]
-    margin = max(1, min(margin, h // 4, w // 4))
-
-    top = pixels[:margin, :].reshape(-1, 3)
-    bottom = pixels[-margin:, :].reshape(-1, 3)
-    left = pixels[margin:-margin, :margin].reshape(-1, 3)
-    right = pixels[margin:-margin, -margin:].reshape(-1, 3)
-
-    combined = np.concatenate([top, bottom, left, right], axis=0)
-    avg = np.mean(combined, axis=0)
-    return tuple(int(c) for c in avg)
 
 
 class CR_ComicPanelTemplates:
@@ -286,41 +270,42 @@ class CR_ComicPanelTemplates:
     @classmethod
     def INPUT_TYPES(s):
         directions = ["left to right", "right to left"]
-        templates = ["custom",
-                     "G22", "G33",
-                     "H2", "H3",
-                     "H12", "H13",
-                     "H21", "H23",
-                     "H31", "H32",
-                     "V2", "V3",
-                     "V12", "V13",
-                     "V21", "V23",
-                     "V31", "V32"]
-
+        templates = [
+            "custom", "G22", "G33",
+            "H2", "H3",
+            "H12", "H13", "H21", "H23", "H31", "H32",
+            "V2", "V3",
+            "V12", "V13", "V21", "V23", "V31", "V32"
+        ]
         fit_modes = ["contain", "cover", "scale-down"]
         position_modes = ["center", "left_bias", "right_bias", "random_jitter"]
 
-        return {"required": {
-                    "page_width": ("INT", {"default": 512, "min": 8, "max": 4096}),
-                    "page_height": ("INT", {"default": 512, "min": 8, "max": 4096}),
-                    "template": (templates,),
-                    "reading_direction": (directions,),
-                    "border_thickness": ("INT", {"default": 5, "min": 0, "max": 1024}),
-                    "outline_thickness": ("INT", {"default": 2, "min": 0, "max": 1024}),
-                    "outline_color": (COLORS,),
-                    "panel_color": (COLORS,),
-                    "background_color": (COLORS,),
-                    "fit_mode": (fit_modes, {"default": "cover"}),
-                    "position_mode": (position_modes, {"default": "center"}),
-               },
-                "optional": {
-                    "images": ("IMAGE",),
-                    "custom_panel_layout": ("STRING", {"multiline": False, "default": "H123"}),
-                    "outline_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
-                    "panel_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
-                    "bg_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
-               }
-    }
+        return {
+            "required": {
+                "page_width": ("INT", {"default": 512, "min": 8, "max": 4096}),
+                "page_height": ("INT", {"default": 512, "min": 8, "max": 4096}),
+                "template": (templates,),
+                "reading_direction": (directions,),
+                "border_thickness": ("INT", {"default": 5, "min": 0, "max": 1024}),
+                "outline_thickness": ("INT", {"default": 2, "min": 0, "max": 1024}),
+                "outline_color": (COLORS,),
+                "panel_color": (COLORS,),
+                "background_color": (COLORS,),
+                "fit_mode": (fit_modes, {"default": "cover"}),
+                "position_mode": (position_modes, {"default": "center"}),
+                "bg_color_source": (
+                    ["solid", "image_average", "image_border_avg"],
+                    {"default": "solid"}
+                ),
+            },
+            "optional": {
+                "images": ("IMAGE",),
+                "custom_panel_layout": ("STRING", {"multiline": False, "default": "H123"}),
+                "outline_color_hex": ("STRING", {"default": "#000000"}),
+                "panel_color_hex": ("STRING", {"default": "#000000"}),
+                "bg_color_hex": ("STRING", {"default": "#FFFFFF"})
+            }
+        }
 
     RETURN_TYPES = ("IMAGE", "STRING")
     RETURN_NAMES = ("image", "show_help")
@@ -330,11 +315,11 @@ class CR_ComicPanelTemplates:
     def layout(self, page_width, page_height, template, reading_direction,
                border_thickness, outline_thickness,
                outline_color, panel_color, background_color,
-               fit_mode, position_mode,
+               fit_mode, position_mode, bg_color_source,
                images=None, custom_panel_layout='G44',
-               outline_color_hex='#000000', panel_color_hex='#000000', bg_color_hex='#000000'):
+               outline_color_hex='#000000', panel_color_hex='#000000', bg_color_hex='#FFFFFF'):
 
-        image_panels = []
+        image_panels = []  # Will store {"pos": [...], "inner": [...]}
         panels_tensor_hashes = []
         images_tensor_hashes = []
         k = 0
@@ -342,77 +327,90 @@ class CR_ComicPanelTemplates:
 
         # Convert tensor images to PIL + extract hashes
         if images is not None:
-            images_tensor_hashes = [get_tensor_hash(image) for image in images]
-            images = [tensor2pil(image) for image in images]
+            images_tensor_hashes = [get_tensor_hash(img) for img in images]
+            images = [tensor2pil(img) for img in images]
             len_images = len(images)
 
-        # Get RGB values for colors
+        # Resolve colors
         outline_color = get_color_values(outline_color, outline_color_hex, color_mapping)
         panel_color = get_color_values(panel_color, panel_color_hex, color_mapping)
         bg_color = get_color_values(background_color, bg_color_hex, color_mapping)
 
-        # Create page and apply bg color
-        size = (page_width - (2 * border_thickness), page_height - (2 * border_thickness))
-        page = Image.new('RGB', size, bg_color)
+        # Create inner page
+        inner_w = page_width - 2 * border_thickness
+        inner_h = page_height - 2 * border_thickness
+        page = Image.new('RGB', (inner_w, inner_h), bg_color)
+
         if template == "custom":
             template = custom_panel_layout
 
-        # === PANEL LAYOUT LOGIC (RESTORED) ===
         first_char = template[0]
+
+        # === PANEL LAYOUT LOGIC ===
+        gap = 2 * (border_thickness + outline_thickness)
+
         if first_char == "G":
-            rows = int(template[1])
-            columns = int(template[2])
-            panel_width = (page.width - (2 * columns * (border_thickness + outline_thickness))) // columns
-            panel_height = (page.height  - (2 * rows * (border_thickness + outline_thickness))) // rows
+            rows, cols = int(template[1]), int(template[2])
+            pw = (inner_w - cols * gap) // cols
+            ph = (inner_h - rows * gap) // rows
             for i in range(rows):
-                for j in range(columns):
+                for j in range(cols):
                     p = create_and_paste_panel(
                         page, border_thickness, outline_thickness,
-                        panel_width, panel_height, page.width,
+                        pw, ph, page.width,
                         panel_color, bg_color, outline_color,
                         images, i, j, k, len_images, reading_direction,
-                        fit_mode, position_mode
+                        fit_mode, position_mode, bg_color_source
                     )
                     if k < len_images:
-                        image_panels.append(p[:4])  # (x, y, w, h)
+                        image_panels.append({
+                            "pos": p[:4],
+                            "inner": p[4:] if len(p) > 4 else None
+                        })
                         panels_tensor_hashes.append(images_tensor_hashes[k])
                     k += 1
 
         elif first_char == "H":
             rows = len(template) - 1
-            panel_height = (page.height  - (2 * rows * (border_thickness + outline_thickness))) // rows
+            ph = (inner_h - rows * gap) // rows
             for i in range(rows):
-                columns = int(template[i+1])
-                panel_width = (page.width - (2 * columns * (border_thickness + outline_thickness))) // columns
-                for j in range(columns):
+                cols = int(template[i+1])
+                pw = (inner_w - cols * gap) // cols
+                for j in range(cols):
                     p = create_and_paste_panel(
                         page, border_thickness, outline_thickness,
-                        panel_width, panel_height, page.width,
+                        pw, ph, page.width,
                         panel_color, bg_color, outline_color,
                         images, i, j, k, len_images, reading_direction,
-                        fit_mode, position_mode
+                        fit_mode, position_mode, bg_color_source
                     )
                     if k < len_images:
-                        image_panels.append(p[:4])
+                        image_panels.append({
+                            "pos": p[:4],
+                            "inner": p[4:] if len(p) > 4 else None
+                        })
                         panels_tensor_hashes.append(images_tensor_hashes[k])
                     k += 1
 
         elif first_char == "V":
-            columns = len(template) - 1
-            panel_width = (page.width - (2 * columns * (border_thickness + outline_thickness))) // columns
-            for j in range(columns):
+            cols = len(template) - 1
+            pw = (inner_w - cols * gap) // cols
+            for j in range(cols):
                 rows = int(template[j+1])
-                panel_height = (page.height  - (2 * rows * (border_thickness + outline_thickness))) // rows
+                ph = (inner_h - rows * gap) // rows
                 for i in range(rows):
                     p = create_and_paste_panel(
                         page, border_thickness, outline_thickness,
-                        panel_width, panel_height, page.width,
+                        pw, ph, page.width,
                         panel_color, bg_color, outline_color,
                         images, i, j, k, len_images, reading_direction,
-                        fit_mode, position_mode
+                        fit_mode, position_mode, bg_color_source
                     )
                     if k < len_images:
-                        image_panels.append(p[:4])
+                        image_panels.append({
+                            "pos": p[:4],
+                            "inner": p[4:] if len(p) > 4 else None
+                        })
                         panels_tensor_hashes.append(images_tensor_hashes[k])
                     k += 1
 
@@ -421,10 +419,9 @@ class CR_ComicPanelTemplates:
             page = ImageOps.expand(page, border=border_thickness, fill=bg_color)
 
         panel_offset_padding = border_thickness + outline_thickness
+        full_fitting = (fit_mode == "cover")
 
-        # === BUILD show_help WITH YOUR SCHEMA ===
-        full_fitting = (fit_mode == "cover")  # Only "cover" uses scalar hash
-
+        # === BUILD show_help ===
         show_help_data = {
             "x": border_thickness,
             "y": border_thickness,
@@ -432,21 +429,22 @@ class CR_ComicPanelTemplates:
             "height": page.height - 2 * border_thickness,
             "images": [
                 {
-                    "x": panel_offset_padding + panel[0],
-                    "y": panel_offset_padding + panel[1],
-                    "width": panel[2] - 2 * panel_offset_padding,
-                    "height": panel[3] - 2 * panel_offset_padding,
+                    "x": panel_offset_padding + item["pos"][0],
+                    "y": panel_offset_padding + item["pos"][1],
+                    "width": item["pos"][2] - 2 * panel_offset_padding,
+                    "height": item["pos"][3] - 2 * panel_offset_padding,
                     "images": (
                         panels_tensor_hashes[i] if full_fitting else [{
-                            "x": p[4] if len(p) > 4 else 0,
-                            "y": p[5] if len(p) > 5 else 0,
-                            "width": p[6] if len(p) > 6 else (panel[2] - 2 * panel_offset_padding),
-                            "height": p[7] if len(p) > 7 else (panel[3] - 2 * panel_offset_padding),
+                            "x": inner[0],
+                            "y": inner[1],
+                            "width": inner[2],
+                            "height": inner[3],
                             "images": panels_tensor_hashes[i]
-                        }]
+                        }] if inner else []
                     )
                 }
-                for i, panel in enumerate(image_panels)
+                for i, item in enumerate(image_panels)
+                if (inner := item["inner"]) is not None or not full_fitting
             ]
         }
 
