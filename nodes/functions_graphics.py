@@ -511,7 +511,7 @@ def create_and_paste_panel(page, border_thickness, outline_thickness,
             free_x = panel_width - new_w
             free_y = panel_height - new_h
 
-            rng = Random(k)
+            rng = random.Random(k)
             jitter_x = int(free_x * 0.1 * rng.random()) if free_x > 0 else 0
             jitter_y = int(free_y * 0.1 * rng.random()) if free_y > 0 else 0
 
