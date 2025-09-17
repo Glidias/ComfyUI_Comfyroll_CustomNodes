@@ -235,7 +235,7 @@ def text_panel(image_width, image_height, text,
               margins, line_spacing,
               position_x, position_y,
               align, justify,
-              rotation_angle, rotation_options):
+              rotation_angle, rotation_options, background_image=None):
 
     """
     Create an image with text overlaid on a background.
@@ -247,6 +247,13 @@ def text_panel(image_width, image_height, text,
     # Create PIL images for the text and background layers and text mask
     size = (image_width, image_height)
     panel = Image.new('RGB', size, background_color)
+
+    # Draw bg image if any
+    if background_image is not None:
+        if background_image.mode == 'RGBA':
+                panel.paste(background_image, (0, 0), background_image)
+        else:
+            panel.paste(background_image, (0, 0))
 
     # Draw the text on the text mask
     image_out = draw_text(panel, text,
@@ -327,7 +334,7 @@ def draw_text(panel, text,
     return rotated_panel
 
 
-def combine_images(images, layout_direction='horizontal'):
+def combine_images(images, layout_direction='horizontal', bg_color=None):
     """
     Combine a list of PIL Image objects either horizontally or vertically.
 
@@ -346,7 +353,7 @@ def combine_images(images, layout_direction='horizontal'):
         combined_width = max(image.width for image in images)
         combined_height = sum(image.height for image in images)
 
-    combined_image = Image.new('RGB', (combined_width, combined_height))
+    combined_image = Image.new('RGB', (combined_width, combined_height), bg_color)
 
     x_offset = 0
     y_offset = 0  # Initialize y_offset for vertical layout

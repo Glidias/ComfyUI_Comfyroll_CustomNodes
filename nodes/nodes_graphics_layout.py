@@ -217,6 +217,9 @@ class CR_PageLayout:
                 "font_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
                 "border_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
                 "bg_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
+                'layout_alignment': (["vertical", "horizontal"],  {"default": "vertical"}),
+                "header_image": ("IMAGE",),
+                "footer_image": ("IMAGE",),
                }
     }
 
@@ -231,7 +234,7 @@ class CR_PageLayout:
                footer_height, footer_text, footer_align,
                font_name, font_color,
                header_font_size, footer_font_size,
-               font_color_hex='#000000', border_color_hex='#000000', bg_color_hex='#000000'):
+               font_color_hex='#000000', border_color_hex='#000000', bg_color_hex='#000000', layout_alignment='horizontal', header_image=None, footer_image=None):
 
         # Get RGB values for the text and background colors
         font_color = get_color_values(font_color, font_color_hex, color_mapping)
@@ -240,6 +243,12 @@ class CR_PageLayout:
 
         main_panel_hash = get_tensor_hash(image_panel)
         main_panel = tensor2pil(image_panel)
+
+        if header_image is not None:
+            header_image = tensor2pil(header_image)
+
+        if footer_image is not None:
+            footer_image = tensor2pil(footer_image)
 
         # Get image width and height
         image_width = main_panel.width
@@ -258,7 +267,8 @@ class CR_PageLayout:
 
         images = []
 
-        y_offset = 0
+        yx_offset = 0
+        is_vertical = layout_alignment == "vertical"
 
         ### Create text panels and add to images array
         if layout_options == "header" or layout_options == "header and footer":
@@ -269,11 +279,13 @@ class CR_PageLayout:
                                       margins, line_spacing,
                                       position_x, position_y,
                                       align, header_align,
-                                      rotation_angle, rotation_options)
+                                      rotation_angle, rotation_options, background_image=header_image)
             images.append(header_panel)
-            y_offset += header_panel.height
+            yx_offset += header_panel.height if is_vertical else header_panel.width
 
         images.append(main_panel)
+
+        yx_offset_footer = (main_panel.height if is_vertical else main_panel.width) + yx_offset
 
         if layout_options == "footer" or layout_options == "header and footer":
             footer_panel = text_panel(image_width, footer_height, footer_text,
@@ -283,10 +295,12 @@ class CR_PageLayout:
                                       margins, line_spacing,
                                       position_x, position_y,
                                       align, footer_align,
-                                      rotation_angle, rotation_options)
+                                      rotation_angle, rotation_options,
+                                      background_image=footer_image
+                                      )
             images.append(footer_panel)
 
-        combined_image = combine_images(images, 'vertical')
+        combined_image = combine_images(images, layout_alignment, bg_color)
 
         # Add a border to the combined image
         if border_thickness > 0:
@@ -294,16 +308,35 @@ class CR_PageLayout:
 
         offset_padding = border_thickness
 
+        images_list = [{ # main_panel image
+            "x": offset_padding if is_vertical else yx_offset + offset_padding,
+            "y": yx_offset + offset_padding if is_vertical else offset_padding,
+            "width": image_width,
+            "height": image_height,
+            "images": main_panel_hash
+        }]
+        if header_image and layout_options in ("header", "header and footer"):
+            images_list.insert(0, { # header image
+                "x": offset_padding,
+                "y": offset_padding,
+                "width": header_image.width,
+                "height": header_image.height,
+                "images": get_tensor_hash(header_image)
+            })
+        if footer_image and layout_options in ("footer", "header and footer"):
+            images_list.append({ # footer image
+                "x": offset_padding if is_vertical else yx_offset_footer + offset_padding,
+                "y": yx_offset_footer + offset_padding if is_vertical else offset_padding,
+                "width": footer_image.width,
+                "height": footer_image.height,
+                "images": get_tensor_hash(footer_image)
+            })
+
+
         show_help = json.dumps({
             "width": combined_image.width,
             "height": combined_image.height,
-            "images": [{ # main_panel image
-                "x": offset_padding,
-                "y": y_offset + offset_padding,
-                "width": image_width,
-                "height": image_height,
-                "images": main_panel_hash
-            }]
+            "images": images_list
         })
         #show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-page-layout"
 
