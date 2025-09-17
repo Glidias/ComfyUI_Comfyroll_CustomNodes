@@ -779,7 +779,36 @@ class CR_ImageBorder:
 
         images = torch.cat(images, dim=0)
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-image-border"
+        # --- BUILD SCENE GRAPH (minimal addition) ---
+        if len(image) == 0:
+            show_help = json.dumps({"x":0,"y":0,"width":0,"height":0})
+        else:
+            bg_hash = get_tensor_hash(image[0].unsqueeze(0))
+            pil_first = tensor2pil(image[0])
+            orig_w, orig_h = pil_first.size
+
+            final_w = orig_w + left_thickness + right_thickness + 2 * outline_thickness
+            final_h = orig_h + top_thickness + bottom_thickness + 2 * outline_thickness
+
+            show_help_data = {
+                "x": 0,
+                "y": 0,
+                "width": final_w,
+                "height": final_h,
+                "images": [
+                    {
+                        "x": left_thickness + outline_thickness,
+                        "y": top_thickness + outline_thickness,
+                        "width": orig_w,
+                        "height": orig_h,
+                        "images": bg_hash
+                    }
+                ]
+            }
+            show_help = json.dumps(show_help_data)
+
+        # Comment out the old help URL
+        # show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-image-border"
 
         return (images, show_help, )
 
@@ -889,8 +918,8 @@ class CR_OverlayTransparentImage:
 
     @classmethod
     def INPUT_TYPES(s):
-
-        return {"required": {
+        return {
+            "required": {
                 "back_image": ("IMAGE",),
                 "overlay_image": ("IMAGE",),
                 "transparency": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1}),
@@ -898,45 +927,284 @@ class CR_OverlayTransparentImage:
                 "offset_y": ("INT", {"default": 0, "min": -4096, "max": 4096}),
                 "rotation_angle": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 0.1}),
                 "overlay_scale_factor": ("FLOAT", {"default": 1.000, "min": 0.000, "max": 100.000, "step": 0.001}),
-                }
+                "anchor": ([
+                    "center",
+                    "top", "bottom", "left", "right",
+                    "top-left", "top-right", "bottom-left", "bottom-right"
+                ], {"default": "center"}),
+            }
         }
 
-    RETURN_TYPES = ("IMAGE", )
+    RETURN_TYPES = ("IMAGE", "STRING", "IMAGE")
+    RETURN_NAMES = ("image", "show_help", "overlay_rgba")
     FUNCTION = "overlay_image"
     CATEGORY = icons.get("Comfyroll/Graphics/Layout")
 
     def overlay_image(self, back_image, overlay_image,
-                      transparency, offset_x, offset_y, rotation_angle, overlay_scale_factor=1.0):
+                      transparency, offset_x, offset_y, rotation_angle, overlay_scale_factor=1.0,
+                      anchor="center"):
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-overlay-transparent-image"
+        # Convert tensors to PIL
+        bg_pil = tensor2pil(back_image)
+        fg_pil = tensor2pil(overlay_image)
 
-        # Create PIL images for the text and background layers and text mask
-        back_image = tensor2pil(back_image)
-        overlay_image = tensor2pil(overlay_image)
+        bg_w, bg_h = bg_pil.size
 
-        # Apply transparency to overlay image
-        overlay_image.putalpha(int(255 * (1 - transparency)))
+        # --- Handle Alpha: Combine original alpha with user transparency ---
+        if fg_pil.mode in ('RGBA', 'LA') or (fg_pil.mode == 'P' and 'transparency' in fg_pil.info):
+            if fg_pil.mode == 'RGBA':
+                r, g, b, orig_alpha = fg_pil.split()
+            elif fg_pil.mode == 'LA':
+                l, orig_alpha = fg_pil.split()
+            else:
+                orig_alpha = fg_pil.convert('RGBA').split()[-1]
 
-        # Rotate overlay image
-        overlay_image = overlay_image.rotate(rotation_angle, expand=True)
+            user_alpha_factor = 1.0 - transparency
+            final_alpha_array = np.array(orig_alpha, dtype=np.float32) * user_alpha_factor
+            final_alpha_array = np.clip(final_alpha_array, 0, 255).astype(np.uint8)
+            final_alpha = Image.fromarray(final_alpha_array, mode='L')
 
-        # Scale overlay image
-        overlay_width, overlay_height = overlay_image.size
-        new_size = (int(overlay_width * overlay_scale_factor), int(overlay_height * overlay_scale_factor))
-        overlay_image = overlay_image.resize(new_size, Image.Resampling.LANCZOS)
+            fg_pil = Image.merge('RGBA', (*fg_pil.convert('RGB').split(), final_alpha))
+        else:
+            fg_pil = fg_pil.convert('RGBA')
+            alpha_value = int(255 * (1 - transparency))
+            fg_pil.putalpha(Image.new('L', fg_pil.size, alpha_value))
 
-        # Calculate centered position relative to the center of the background image
-        center_x = back_image.width // 2
-        center_y = back_image.height // 2
-        position_x = center_x - overlay_image.width // 2 + offset_x
-        position_y = center_y - overlay_image.height // 2 + offset_y
+        # --- ROTATE around center ---
+        if rotation_angle != 0.0:
+            fg_pil = fg_pil.rotate(rotation_angle, resample=Image.BICUBIC, expand=True)
 
-        # Paste the rotated overlay image onto the new back image at the specified position
-        back_image.paste(overlay_image, (position_x, position_y), overlay_image)
+        # --- SCALE ---
+        new_size = (int(fg_pil.width * overlay_scale_factor), int(fg_pil.height * overlay_scale_factor))
+        fg_pil = fg_pil.resize(new_size, Image.LANCZOS)
+        rotated_scaled_w, rotated_scaled_h = fg_pil.size
 
-        # Convert the PIL image back to a torch tensor
-        return pil2tensor(back_image),
+        # --- POSITION using anchor ---
+        anchor = anchor.lower()
 
+        if anchor == "center":
+            x = (bg_w - rotated_scaled_w) // 2 + offset_x
+            y = (bg_h - rotated_scaled_h) // 2 + offset_y
+        elif anchor == "top":
+            x = (bg_w - rotated_scaled_w) // 2 + offset_x
+            y = 0 + offset_y
+        elif anchor == "bottom":
+            x = (bg_w - rotated_scaled_w) // 2 + offset_x
+            y = bg_h - rotated_scaled_h + offset_y
+        elif anchor == "left":
+            x = 0 + offset_x
+            y = (bg_h - rotated_scaled_h) // 2 + offset_y
+        elif anchor == "right":
+            x = bg_w - rotated_scaled_w + offset_x
+            y = (bg_h - rotated_scaled_h) // 2 + offset_y
+        elif anchor == "top-left":
+            x = 0 + offset_x
+            y = 0 + offset_y
+        elif anchor == "top-right":
+            x = bg_w - rotated_scaled_w + offset_x
+            y = 0 + offset_y
+        elif anchor == "bottom-left":
+            x = 0 + offset_x
+            y = bg_h - rotated_scaled_h + offset_y
+        elif anchor == "bottom-right":
+            x = bg_w - rotated_scaled_w + offset_x
+            y = bg_h - rotated_scaled_h + offset_y
+        else:
+            x = (bg_w - rotated_scaled_w) // 2
+            y = (bg_h - rotated_scaled_h) // 2
+
+        # --- COMPOSITE ---
+        result = bg_pil.copy()
+        result = result.convert("RGBA")
+        result.paste(fg_pil, (int(x), int(y)), mask=fg_pil)
+        result = result.convert("RGB")  # Back to RGB
+
+        # --- OUTPUT: Final processed overlay (RGBA) ---
+        overlay_rgba_tensor = pil2tensor(fg_pil)
+
+        # --- BUILD SCENE GRAPH ---
+        bg_hash = get_tensor_hash(back_image)
+        fg_hash = get_tensor_hash(overlay_rgba_tensor)  # Based on final RGBA
+
+        show_help_data = {
+            "x": 0,
+            "y": 0,
+            "width": bg_w,
+            "height": bg_h,
+            "images": [
+                {
+                    "x": 0,
+                    "y": 0,
+                    "width": bg_w,
+                    "height": bg_h,
+                    "images": bg_hash
+                },
+                {
+                    "x": int(x),
+                    "y": int(y),
+                    "width": rotated_scaled_w,
+                    "height": rotated_scaled_h,
+                    "images": fg_hash
+                }
+            ]
+        }
+
+        # Comment out old URL
+        # show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-overlay-transparent-image"
+        show_help = json.dumps(show_help_data)
+
+        return (pil2tensor(result), show_help, overlay_rgba_tensor)
+
+#---------------------------------------------------------------------------------------------------------------------#
+class CR_ExpandedOverlayTransparentImage:
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "back_image": ("IMAGE",),
+                "overlay_image": ("IMAGE",),
+                "transparency": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.1}),
+                "offset_x": ("INT", {"default": 0, "min": -4096, "max": 4096}),
+                "offset_y": ("INT", {"default": 0, "min": -4096, "max": 4096}),
+                "rotation_angle": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 0.1}),
+                "overlay_scale_factor": ("FLOAT", {"default": 1.000, "min": 0.000, "max": 100.000, "step": 0.001}),
+                "anchor": ([
+                    "center",
+                    "top", "bottom", "left", "right",
+                    "top-left", "top-right", "bottom-left", "bottom-right"
+                ], {"default": "center"}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "IMAGE",)
+    RETURN_NAMES = ("rgba_canvas", "show_help", "overlay_rgba",)
+    FUNCTION = "composite"
+    CATEGORY = icons.get("Comfyroll/Graphics/Layout")
+
+    def composite(self, back_image, overlay_image,
+                  transparency, offset_x, offset_y, rotation_angle, overlay_scale_factor=1.0,
+                  anchor="center"):
+
+        # Convert tensors to PIL
+        bg_pil = tensor2pil(back_image[0]).convert("RGBA")  # Use first image
+        fg_pil = tensor2pil(overlay_image[0]).convert("RGBA")  # Use first image
+
+        bg_w, bg_h = bg_pil.size
+
+        # --- Handle Alpha: Combine original alpha with user transparency ---
+        r, g, b, orig_alpha = fg_pil.split()
+        user_alpha_factor = 1.0 - transparency
+        final_alpha_array = np.array(orig_alpha, dtype=np.float32) * user_alpha_factor
+        final_alpha_array = np.clip(final_alpha_array, 0, 255).astype(np.uint8)
+        final_alpha = Image.fromarray(final_alpha_array, mode='L')
+        fg_pil = Image.merge('RGBA', (r, g, b, final_alpha))
+
+        # --- ROTATE ---
+        if rotation_angle != 0.0:
+            fg_pil = fg_pil.rotate(rotation_angle, resample=Image.BICUBIC, expand=True)
+
+        # --- SCALE ---
+        new_size = (int(fg_pil.width * overlay_scale_factor), int(fg_pil.height * overlay_scale_factor))
+        fg_pil = fg_pil.resize(new_size, Image.LANCZOS)
+        fg_w, fg_h = fg_pil.size
+
+        # --- POSITION using anchor (relative to center of bg) ---
+        cx = bg_w // 2
+        cy = bg_h // 2
+
+        anchor = anchor.lower()
+
+        if anchor == "center":
+            fx = cx - fg_w // 2 + offset_x
+            fy = cy - fg_h // 2 + offset_y
+        elif anchor == "top":
+            fx = cx - fg_w // 2 + offset_x
+            fy = 0 + offset_y
+        elif anchor == "bottom":
+            fx = cx - fg_w // 2 + offset_x
+            fy = bg_h - fg_h + offset_y
+        elif anchor == "left":
+            fx = 0 + offset_x
+            fy = cy - fg_h // 2 + offset_y
+        elif anchor == "right":
+            fx = bg_w - fg_w + offset_x
+            fy = cy - fg_h // 2 + offset_y
+        elif anchor == "top-left":
+            fx = 0 + offset_x
+            fy = 0 + offset_y
+        elif anchor == "top-right":
+            fx = bg_w - fg_w + offset_x
+            fy = 0 + offset_y
+        elif anchor == "bottom-left":
+            fx = 0 + offset_x
+            fy = bg_h - fg_h + offset_y
+        elif anchor == "bottom-right":
+            fx = bg_w - fg_w + offset_x
+            fy = bg_h - fg_h + offset_y
+        else:
+            fx = cx - fg_w // 2 + offset_x
+            fy = cy - fg_h // 2 + offset_y
+
+        # --- DETERMINE FINAL CANVAS SIZE ---
+        # Include both background and overlay bounds
+        min_x = min(0, fx)
+        min_y = min(0, fy)
+        max_x = max(bg_w, fx + fg_w)
+        max_y = max(bg_h, fy + fg_h)
+
+        canvas_w = int(max_x - min_x)
+        canvas_h = int(max_y - min_y)
+
+        # Offset for placing background
+        bg_x = -min_x
+        bg_y = -min_y
+
+        # Final overlay position on canvas
+        fg_canvas_x = fx - min_x
+        fg_canvas_y = fy - min_y
+
+        # --- CREATE FINAL RGBA CANVAS ---
+        canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+
+        # Paste background
+        canvas.paste(bg_pil, (bg_x, bg_y), mask=bg_pil)
+
+        # Paste overlay
+        canvas.paste(fg_pil, (fg_canvas_x, fg_canvas_y), mask=fg_pil)
+
+        overlay_rgba_tensor = pil2tensor(fg_pil)
+
+        # --- BUILD SCENE GRAPH ---
+        bg_hash = get_tensor_hash(back_image)
+        fg_hash = get_tensor_hash(overlay_rgba_tensor)
+
+        show_help_data = {
+            "x": 0,
+            "y": 0,
+            "width": canvas_w,
+            "height": canvas_h,
+            "images": [
+                {
+                    "x": bg_x,
+                    "y": bg_y,
+                    "width": bg_w,
+                    "height": bg_h,
+                    "images": bg_hash
+                },
+                {
+                    "x": fg_canvas_x,
+                    "y": fg_canvas_y,
+                    "width": fg_w,
+                    "height": fg_h,
+                    "images": fg_hash
+                }
+            ]
+        }
+
+        show_help = json.dumps(show_help_data)
+
+        return (pil2tensor(canvas), show_help, overlay_rgba_tensor)
 #---------------------------------------------------------------------------------------------------------------------#
 class CR_FeatheredBorder:
 
