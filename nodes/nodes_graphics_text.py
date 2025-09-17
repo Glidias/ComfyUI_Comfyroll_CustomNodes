@@ -3,6 +3,7 @@
 # for ComfyUI                                                 https://github.com/comfyanonymous/ComfyUI
 #---------------------------------------------------------------------------------------------------------------------#
 
+import json
 import numpy as np
 import torch
 import os
@@ -43,6 +44,46 @@ class AnyType(str):
 any_type = AnyType("*")
 
 #---------------------------------------------------------------------------------------------------------------------#
+def create_text_image(text, font_name, font_size, color, position_x, position_y, align, justify, margins, line_spacing, rotation_angle, rotation_options, canvas_size):
+    """Returns a minimal RGBA PIL image of the text + its offset."""
+    w, h = canvas_size
+    text_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(text_layer)
+
+    # Load font
+    font_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "fonts", font_name)
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except Exception as e:
+        print(f"Failed to load font {font_name}: {e}")
+        font = ImageFont.load_default()
+
+    # Draw masked text (reusing your existing logic)
+    mask = Image.new('L', (w, h), 0)
+    rotated_mask = draw_masked_text(mask, text, font_name, font_size,
+                                    margins, line_spacing,
+                                    position_x, position_y,
+                                    align, justify,
+                                    rotation_angle, rotation_options)
+
+    # Paste white text onto RGBA layer using the mask
+    bbox = rotated_mask.getbbox()
+    if not bbox:
+        return None, (0, 0)
+
+    # Extract minimal region
+    cropped_mask = rotated_mask.crop(bbox)
+    x0, y0, x1, y1 = bbox
+    tw, th = x1 - x0, y1 - y0
+
+    # Create minimal RGBA text image
+    text_img = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+    txt_draw = ImageDraw.Draw(text_img)
+    txt_draw.bitmap((0, 0), cropped_mask, fill=color)
+
+    return text_img, (x0, y0)  # PIL image + top-left corner
+
+#---------------------------------------------------------------------------------------------------------------------#
 
 ALIGN_OPTIONS = ["center", "top", "bottom"]
 ROTATE_OPTIONS = ["text center", "image center"]
@@ -77,44 +118,85 @@ class CR_OverlayText:
                 }
     }
 
-    RETURN_TYPES = ("IMAGE", "STRING",)
-    RETURN_NAMES = ("IMAGE", "show_help",)
+    RETURN_TYPES = ("IMAGE", "STRING", "IMAGE",)
+    RETURN_NAMES = ("IMAGE", "show_help", "text_image",)
     FUNCTION = "overlay_text"
     CATEGORY = icons.get("Comfyroll/Graphics/Text")
 
     def overlay_text(self, image, text, font_name, font_size, font_color,
-                     margins, line_spacing,
-                     position_x, position_y,
-                     align, justify,
-                     rotation_angle, rotation_options,
-                     font_color_hex='#000000'):
+                 margins, line_spacing,
+                 position_x, position_y,
+                 align, justify,
+                 rotation_angle, rotation_options,
+                 font_color_hex='#000000'):
 
         # Get RGB values for the text color
         text_color = get_color_values(font_color, font_color_hex, color_mapping)
 
         # Convert tensor images
         image_3d = image[0, :, :, :]
+        back_image = tensor2pil(image_3d)
 
         # Create PIL images for the text and background layers and text mask
-        back_image = tensor2pil(image_3d)
         text_image = Image.new('RGB', back_image.size, text_color)
         text_mask = Image.new('L', back_image.size)
 
         # Draw the text on the text mask
         rotated_text_mask = draw_masked_text(text_mask, text, font_name, font_size,
-                                             margins, line_spacing,
-                                             position_x, position_y,
-                                             align, justify,
-                                             rotation_angle, rotation_options)
+                                            margins, line_spacing,
+                                            position_x, position_y,
+                                            align, justify,
+                                            rotation_angle, rotation_options)
 
         # Composite the text image onto the background image using the rotated text mask
         image_out = Image.composite(text_image, back_image, rotated_text_mask)
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Text-Nodes#cr-overlay-text"
+        # --- EXTRACT MINIMAL RGBA TEXT IMAGE ---
+        bbox = rotated_text_mask.getbbox()
+        if bbox:
+            tx, ty, tw, th = bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]
+            cropped_mask = rotated_text_mask.crop(bbox)
+            rgba_text_pil = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+            rgba_draw = ImageDraw.Draw(rgba_text_pil)
+            rgba_draw.bitmap((0, 0), cropped_mask, fill=text_color)
+        else:
+            tx = ty = tw = th = 0
+            rgba_text_pil = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
 
-        # Convert the PIL image back to a torch tensor
-        return (pil2tensor(image_out), show_help,)
+        text_tensor = pil2tensor(rgba_text_pil)  # [1, H, W, C]
+        text_hash = get_tensor_hash(text_tensor)
 
+        # --- BUILD SCENE GRAPH ---
+        bg_hash = get_tensor_hash(image)
+
+        show_help_data = {
+            "x": 0,
+            "y": 0,
+            "width": back_image.width,
+            "height": back_image.height,
+            "images": [
+                # Background image
+                {
+                    "x": 0,
+                    "y": 0,
+                    "width": back_image.width,
+                    "height": back_image.height,
+                    "images": bg_hash
+                },
+                # Text overlay (real image tensor)
+                {
+                    "x": tx,
+                    "y": ty,
+                    "width": tw,
+                    "height": th,
+                    "images": text_hash
+                }
+            ]
+        }
+
+        show_help = json.dumps(show_help_data, indent=2)
+
+        return (pil2tensor(image_out), show_help, text_tensor)
 #---------------------------------------------------------------------------------------------------------------------#
 class CR_DrawText:
 
@@ -216,45 +298,77 @@ class CR_MaskText:
     }
 
     RETURN_TYPES = ("IMAGE", "STRING",)
-    RETURN_NAMES = ("IMAGE", "show_help",)
+    RETURN_NAMES = ("IMAGE", "show_help", "text_image",)
     FUNCTION = "mask_text"
     CATEGORY = icons.get("Comfyroll/Graphics/Text")
 
     def mask_text(self, image, text, font_name, font_size,
-                  margins, line_spacing,
-                  position_x, position_y, background_color,
-                  align, justify,
-                  rotation_angle, rotation_options,
-                  bg_color_hex='#000000'):
+              margins, line_spacing,
+              position_x, position_y, background_color,
+              align, justify,
+              rotation_angle, rotation_options,
+              bg_color_hex='#000000'):
 
         # Get RGB values for the background color
         bg_color = get_color_values(background_color, bg_color_hex, color_mapping)
 
         # Convert tensor images
         image_3d = image[0, :, :, :]
-
-        # Create PIL images for the text and background layers and text mask
         text_image = tensor2pil(image_3d)
+        background_image = Image.new('RGB', text_image.size, bg_color)
         text_mask = Image.new('L', text_image.size)
-        background_image = Image.new('RGB', text_mask.size, bg_color)
 
         # Draw the text on the text mask
         rotated_text_mask = draw_masked_text(text_mask, text, font_name, font_size,
-                                             margins, line_spacing,
-                                             position_x, position_y,
-                                             align, justify,
-                                             rotation_angle, rotation_options)
+                                            margins, line_spacing,
+                                            position_x, position_y,
+                                            align, justify,
+                                            rotation_angle, rotation_options)
 
-        # Invert the text mask (so the text is white and the background is black)
-        text_mask = ImageOps.invert(rotated_text_mask)
+        # Invert the text mask
+        inverted_mask = ImageOps.invert(rotated_text_mask)
 
         # Composite the text image onto the background image using the inverted text mask
-        image_out = Image.composite(background_image, text_image, text_mask)
+        image_out = Image.composite(background_image, text_image, inverted_mask)
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Text-Nodes#cr-mask-text"
+        # --- EXTRACT MINIMAL RGBA TEXT IMAGE ---
+        bbox = inverted_mask.getbbox()
+        if bbox:
+            tx, ty, tw, th = bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]
+            cropped_mask = inverted_mask.crop(bbox)
+            rgba_text_pil = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+            rgba_draw = ImageDraw.Draw(rgba_text_pil)
+            rgba_draw.bitmap((0, 0), cropped_mask, fill=(255, 255, 255))  # White text
+        else:
+            tx = ty = tw = th = 0
+            rgba_text_pil = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
 
-        # Convert the PIL image back to a torch tensor
-        return (pil2tensor(image_out), show_help,)
+        text_tensor = pil2tensor(rgba_text_pil)
+        text_hash = get_tensor_hash(text_tensor)
+
+        # --- BUILD SCENE GRAPH ---
+        bg_hash = get_tensor_hash(image)
+
+        show_help_data = {
+            "x": 0,
+            "y": 0,
+            "width": text_image.width,
+            "height": text_image.height,
+            "images": [
+                {
+                    "x": 0, "y": 0, "width": text_image.width, "height": text_image.height,
+                    "images": bg_hash
+                },
+                {
+                    "x": tx, "y": ty, "width": tw, "height": th,
+                    "images": text_hash
+                }
+            ]
+        }
+
+        show_help = json.dumps(show_help_data, indent=2)
+
+        return (pil2tensor(image_out), show_help, text_tensor)
 
 #---------------------------------------------------------------------------------------------------------------------#
 class CR_CompositeText:
@@ -282,17 +396,17 @@ class CR_CompositeText:
                 }
     }
 
-    RETURN_TYPES = ("IMAGE", "STRING",)
-    RETURN_NAMES = ("IMAGE", "show_help",)
+    RETURN_TYPES = ("IMAGE", "STRING", "IMAGE",)
+    RETURN_NAMES = ("IMAGE", "show_help", "text_image",)
     FUNCTION = "composite_text"
     CATEGORY = icons.get("Comfyroll/Graphics/Text")
 
     def composite_text(self, image_text, image_background, text,
-                       font_name, font_size,
-                       margins, line_spacing,
-                       position_x, position_y,
-                       align, justify,
-                       rotation_angle, rotation_options):
+                   font_name, font_size,
+                   margins, line_spacing,
+                   position_x, position_y,
+                   align, justify,
+                   rotation_angle, rotation_options):
 
         # Convert tensor images
         image_text_3d = image_text[0, :, :, :]
@@ -305,19 +419,47 @@ class CR_CompositeText:
 
         # Draw the text on the text mask
         rotated_text_mask = draw_masked_text(text_mask, text, font_name, font_size,
-                                             margins, line_spacing,
-                                             position_x, position_y,
-                                             align, justify,
-                                             rotation_angle, rotation_options)
+                                            margins, line_spacing,
+                                            position_x, position_y,
+                                            align, justify,
+                                            rotation_angle, rotation_options)
 
         # Composite the text image onto the background image using the rotated text mask
         image_out = Image.composite(text_image, back_image, rotated_text_mask)
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Text-Nodes#cr-composite-text"
+        # --- EXTRACT MINIMAL RGBA TEXT IMAGE ---
+        bbox = rotated_text_mask.getbbox()
+        if bbox:
+            tx, ty, tw, th = bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]
+            cropped_mask = rotated_text_mask.crop(bbox)
+            rgba_text_pil = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+            rgba_draw = ImageDraw.Draw(rgba_text_pil)
+            rgba_draw.bitmap((0, 0), cropped_mask, fill=(255, 255, 255))  # Assume white
+        else:
+            tx = ty = tw = th = 0
+            rgba_text_pil = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
 
-        # Convert the PIL image back to a torch tensor
-        return (pil2tensor(image_out), show_help,)
+        text_tensor = pil2tensor(rgba_text_pil)
+        text_hash = get_tensor_hash(text_tensor)
 
+        # --- BUILD SCENE GRAPH ---
+        bg_hash = get_tensor_hash(image_background)
+
+        # show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Text-Nodes#cr-composite-text"
+        show_help_data = {
+            "x": 0,
+            "y": 0,
+            "width": back_image.width,
+            "height": back_image.height,
+            "images": [
+                { "x": 0, "y": 0, "width": back_image.width, "height": back_image.height, "images": bg_hash },
+                { "x": tx, "y": ty, "width": tw, "height": th, "images": text_hash }
+            ]
+        }
+
+        show_help = json.dumps(show_help_data, indent=2)
+
+        return (pil2tensor(image_out), show_help, text_tensor)
 #---------------------------------------------------------------------------------------------------------------------#
 class CR_ArabicTextRTL:
 
@@ -357,7 +499,6 @@ class CR_SimpleTextWatermark:
 
     @classmethod
     def INPUT_TYPES(s):
-
         font_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fonts")
         file_list = [f for f in os.listdir(font_dir) if os.path.isfile(os.path.join(font_dir, f)) and f.lower().endswith(".ttf")]
 
@@ -379,73 +520,106 @@ class CR_SimpleTextWatermark:
                 }
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", )
-    RETURN_NAMES = ("IMAGE", "show_help", )
+    RETURN_TYPES = ("IMAGE", "STRING", "IMAGE")
+    RETURN_NAMES = ("image", "show_help", "text_image")
     FUNCTION = "overlay_text"
     CATEGORY = icons.get("Comfyroll/Graphics/Text")
 
     def overlay_text(self, image, text, align,
-                     font_name, font_size, font_color,
-                     opacity, x_margin, y_margin, font_color_hex='#000000'):
+                 font_name, font_size, font_color,
+                 opacity, x_margin, y_margin, font_color_hex='#000000'):
 
-        # Get RGB values for the text color
         text_color = get_color_values(font_color, font_color_hex, color_mapping)
-
         total_images = []
+        first_text_tensor = None  # Will capture minimal text image from first frame
 
-        for img in image:
+        for i, img_tensor in enumerate(image):
+            img_pil = tensor2pil(img_tensor)
+            canvas_w, canvas_h = img_pil.size
 
-            # Create PIL images for the background layer
-            img = tensor2pil(img)
-
-            textlayer = Image.new("RGBA", img.size)
+            # Create transparent text layer
+            textlayer = Image.new("RGBA", img_pil.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(textlayer)
 
-            # Load the font
-            font_file = os.path.join("fonts", str(font_name))
-            resolved_font_path = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), font_file)
-            font = ImageFont.truetype(str(resolved_font_path), size=font_size)
+            # Load font
+            font_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "fonts", font_name)
+            try:
+                font = ImageFont.truetype(font_path, font_size)
+            except:
+                font = ImageFont.load_default()
 
-            # Get the size of the text
             textsize = get_text_size(draw, text, font)
 
-            # Calculate the position to place the text based on the alignment
+            # Compute position (same for all frames)
             if align == 'center':
-                textpos = [(img.size[0] - textsize[0]) // 2, (img.size[1] - textsize[1]) // 2]
+                pos = [(canvas_w - textsize[0]) // 2, (canvas_h - textsize[1]) // 2]
             elif align == 'top left':
-                textpos = [x_margin, y_margin]
+                pos = [x_margin, y_margin]
             elif align == 'top center':
-                textpos = [(img.size[0] - textsize[0]) // 2, y_margin]
+                pos = [(canvas_w - textsize[0]) // 2, y_margin]
             elif align == 'top right':
-                textpos = [img.size[0] - textsize[0] - x_margin, y_margin]
+                pos = [canvas_w - textsize[0] - x_margin, y_margin]
             elif align == 'bottom left':
-                textpos = [x_margin, img.size[1] - textsize[1] - y_margin]
+                pos = [x_margin, canvas_h - textsize[1] - y_margin]
             elif align == 'bottom center':
-                textpos = [(img.size[0] - textsize[0]) // 2, img.size[1] - textsize[1] - y_margin]
+                pos = [(canvas_w - textsize[0]) // 2, canvas_h - textsize[1] - y_margin]
             elif align == 'bottom right':
-                textpos = [img.size[0] - textsize[0] - x_margin, img.size[1] - textsize[1] - y_margin]
+                pos = [canvas_w - textsize[0] - x_margin, canvas_h - textsize[1] - y_margin]
 
-            # Draw the text on the text layer
-            draw.text(textpos, text, font=font, fill=text_color)
+            draw.text(pos, text, font=font, fill=text_color)
 
-            # Adjust the opacity of the text layer if needed
             if opacity != 1:
-                textlayer = reduce_opacity(textlayer, opacity)
+                alpha = textlayer.split()[-1]
+                alpha = alpha.point(lambda p: int(p * opacity))
+                textlayer.putalpha(alpha)
 
-            # Composite the text layer on top of the original image
-            out_image = Image.composite(textlayer, img, textlayer)
+            out_image = Image.composite(textlayer.convert("RGB"), img_pil, textlayer)
+            total_images.append(pil2tensor(out_image))
 
-            # convert to tensor
-            out_image = np.array(out_image.convert("RGB")).astype(np.float32) / 255.0
-            out_image = torch.from_numpy(out_image).unsqueeze(0)
-            total_images.append(out_image)
+            # Extract minimal RGBA text image from first frame only
+            if first_text_tensor is None:
+                bbox = textlayer.getbbox()
+                if bbox:
+                    cropped = textlayer.crop(bbox)
+                    first_text_tensor = pil2tensor(cropped)
+                else:
+                    first_text_tensor = torch.zeros((1, 1, 1, 4), dtype=torch.float32)
 
-        images_out = torch.cat(total_images, 0)
+        # === BUILD show_help ONCE ===
+        bg_hash = get_tensor_hash(image[0].unsqueeze(0))  # Representative hash
+        text_hash = get_tensor_hash(first_text_tensor)
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Text-Nodes#cr-simple-text-watermark"
+        # Use position from last computed `pos` and `textsize`
+        tx, ty = pos
+        tw, th = textsize
 
-        # Convert the PIL image back to a torch tensor
-        return (images_out, show_help, )
+        show_help_data = {
+            "x": 0,
+            "y": 0,
+            "width": canvas_w,
+            "height": canvas_h,
+            "images": [
+                {
+                    "x": 0,
+                    "y": 0,
+                    "width": canvas_w,
+                    "height": canvas_h,
+                    "images": bg_hash
+                },
+                {
+                    "x": tx,
+                    "y": ty,
+                    "width": tw,
+                    "height": th,
+                    "images": text_hash
+                }
+            ]
+        }
+
+        show_help = json.dumps(show_help_data, indent=2)
+        images_out = torch.cat(total_images, dim=0)
+
+        return (images_out, show_help, first_text_tensor)
 
 #---------------------------------------------------------------------------------------------------------------------#
 class CR_SelectFont:
