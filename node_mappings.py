@@ -167,6 +167,7 @@ NODE_CLASS_MAPPINGS = {
     "CR Simple Text Panel": CR_SimpleTextPanel,
     "CR Color Panel": CR_ColorPanel,
     "CR Overlay Transparent Image": CR_OverlayTransparentImage,
+    "CR Overlay Expanded Transparent Image": CR_ExpandedOverlayTransparentImage,
     "CR Half Drop Panel": CR_HalfDropPanel,
     "CR Diamond Panel": CR_DiamondPanel,
     #"CR Simple Titles": CR_SimpleTitles,
