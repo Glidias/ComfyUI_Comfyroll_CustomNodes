@@ -43,6 +43,9 @@ class PerRunCache:
         return cls._instance
     
     def setLayout(self, key, value):
+        # if leaf data already found, will not set layout assumed already resolve
+        if self.GLOBAL_SAVE_LEAF_DATA.get(key) is not None:
+            return
         self.GLOBAL_SAVE_LAYOUTS[key] = value
 
     def getLayout(self, key):
@@ -56,6 +59,9 @@ class PerRunCache:
     
     def setLeafData(self, key, value):
         self.GLOBAL_SAVE_LEAF_DATA[key] = value
+        # leaf data will always override container data
+        if self.GLOBAL_SAVE_LAYOUTS.get(key) is not None:
+            self.GLOBAL_SAVE_LAYOUTS.pop(key)
 
     def getLeafData(self, key):
         return self.GLOBAL_SAVE_LEAF_DATA.get(key, None)
