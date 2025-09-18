@@ -372,7 +372,7 @@ class CR_FontFileList:
     def INPUT_TYPES(s):
     
         comfyroll_font_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fonts")       
-        comfyroll_file_list = [f for f in os.listdir(comfyroll_font_dir) if os.path.isfile(os.path.join(comfyroll_font_dir, f)) and f.lower().endswith(".ttf")]
+        comfyroll_file_list = [f for f in os.listdir(comfyroll_font_dir) if os.path.isfile(os.path.join(comfyroll_font_dir, f)) and (f.lower().endswith(".ttf") or f.lower().endswith(".otf"))]
 
         sources = ["system", "Comfyroll", "from folder"]
         
@@ -397,17 +397,17 @@ class CR_FontFileList:
         if source_folder == "system":
             system_root = os.environ.get('SystemRoot')
             system_font_dir = os.path.join(system_root, 'Fonts')   
-            file_list = [f for f in os.listdir(system_font_dir) if os.path.isfile(os.path.join(system_font_dir, f)) and f.lower().endswith(".ttf")]
+            file_list = [f for f in os.listdir(system_font_dir) if os.path.isfile(os.path.join(system_font_dir, f)) and (f.lower().endswith(".ttf") or f.lower().endswith(".otf"))]
         elif source_folder == "Comfyroll":
             comfyroll_font_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fonts")       
-            file_list = [f for f in os.listdir(comfyroll_font_dir) if os.path.isfile(os.path.join(comfyroll_font_dir, f)) and f.lower().endswith(".ttf")]
+            file_list = [f for f in os.listdir(comfyroll_font_dir) if os.path.isfile(os.path.join(comfyroll_font_dir, f)) and (f.lower().endswith(".ttf") or f.lower().endswith(".otf"))]
         elif source_folder == "from folder":
             if folder_path != '' and folder_path is not None:
                 if not os.path.exists(folder_path):
                     print(f"[Warning] CR Font File List: The folder_path `{folder_path}` does not exist")
                     return None
                 font_dir = folder_path     
-                file_list = [f for f in os.listdir(font_dir) if os.path.isfile(os.path.join(font_dir, f)) and f.lower().endswith(".ttf")]
+                file_list = [f for f in os.listdir(font_dir) if os.path.isfile(os.path.join(font_dir, f)) and (f.lower().endswith(".ttf") or f.lower().endswith(".otf"))]
             else:    
                 print(f"[Warning] CR Font File List: No folder_path entered")
                 return None                
