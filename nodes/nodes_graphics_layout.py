@@ -58,6 +58,8 @@ class PerRunCache:
         return self.GLOBAL_SAVE_LEAF_DATA
     
     def setLeafData(self, key, value):
+        if self.GLOBAL_SAVE_LEAF_DATA.get(key) is not None:
+           raise ValueError(f"Leaf data for key {key} already set.")
         self.GLOBAL_SAVE_LEAF_DATA[key] = value
         # leaf data will always override container data
         if self.GLOBAL_SAVE_LAYOUTS.get(key) is not None:
@@ -286,7 +288,7 @@ class CR_FlattenedLayoutRegionsJSON:
             images = current.get("images")
             if images:
                 if isinstance(images, list):
-                    for image in images:
+                    for image in reversed(images):
                         if not isinstance(image, dict):
                             raise ValueError("Each image in 'images' list array must be a dictionary")
                         stack.append(image)
