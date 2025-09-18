@@ -150,6 +150,7 @@ NODE_CLASS_MAPPINGS = {
     "CR Mask Text": CR_MaskText,
     "CR Composite Text": CR_CompositeText,
     #"CR Arabic Text RTL": CR_ArabicTextRTL,
+    "Markdown BoldItalic-Hack": MarkdownBoldItalicToUnicodeHack,
     "CR Simple Text Watermark": CR_SimpleTextWatermark,
     "CR Select Font": CR_SelectFont,
     ### Graphics Filter

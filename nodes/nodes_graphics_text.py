@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw, ImageOps, ImageFont
 from ..categories import icons
 from ..config import color_mapping, COLORS
 from .functions_graphics import *
+import re
 
 '''
 try:
@@ -655,6 +656,125 @@ class CR_SelectFont:
         show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Text-Nodes#cr-select-font"
 
         return (font_name, show_help,)
+    
+#---------------------------------------------------------------------------------------------------------------------#
+
+"""
+A node that converts some Markdown-style bold and italic text to Unicode styled text. 
+Supports **bold**, *italic*, and ***bold+italic***.
+"""
+class MarkdownBoldItalicToUnicodeHack:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "markdown_text": ("STRING", {
+                    "multiline": True,
+                    "default": "Hello **bold** and *italic* world!\n    - Item one\n    - **Important** item",
+                    "tooltip": "Input Markdown with **bold**, *italic*, ***bold+italic***, and indentation"
+                }),
+                "indent_with_tabs": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "Use Tabs (\\t)",
+                    "label_off": "Use Spaces"
+                }),
+                "spaces_per_indent": ("INT", {
+                    "default": 4,
+                    "min": 1,
+                    "max": 16,
+                    "step": 1,
+                    "display": "number"
+                })
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("styled_unicode_text",)
+    FUNCTION = "convert"
+    CATEGORY = "text/styling"
+    OUTPUT_NODE = True
+
+    # Unicode style maps
+    BOLD_MAP = str.maketrans(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+        "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵"
+    )
+
+    ITALIC_MAP = str.maketrans(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        "𝘈𝘉𝘊𝘋𝘌𝘍𝘎𝘏𝘐𝘑𝘒𝘓𝘔𝘕𝘖𝘗𝘘𝘙𝘚𝘛𝘜𝘝𝘞𝘟𝘠𝘡𝘢𝘣𝘤𝘥𝘦𝘧𝘨𝘩𝘪𝘫𝘬𝘭𝘮𝘯𝘰𝘱𝘲𝘳𝘴𝘵𝘶𝘷𝘸𝘹𝘺𝘻"
+    )
+
+    BOLD_ITALIC_MAP = str.maketrans(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        "𝑨𝑩𝑪𝑫𝑬𝑭𝑮𝑯𝑰𝑱𝑲𝑳𝑴𝑵𝑶𝑷𝑸𝑹𝑺𝑻𝑼𝑽𝑾𝑿𝒀𝒁𝒂𝒃𝒄𝒅𝒆𝒇𝒈𝒉𝒊𝒋𝒌𝒍𝒎𝒏𝒐𝒑𝒒𝒓𝒔𝒕𝒖𝒗𝒘𝒙𝒚𝒛"
+    )
+
+    def apply_style(self, text, style):
+        if style == "bold":
+            return text.translate(self.BOLD_MAP)
+        elif style == "italic":
+            return text.translate(self.ITALIC_MAP)
+        elif style == "bold_italic":
+            return text.translate(self.BOLD_ITALIC_MAP)
+        return text
+
+    def convert(self, markdown_text, indent_with_tabs, spaces_per_indent):
+        lines = markdown_text.splitlines()
+        output_lines = []
+
+        for line in lines:
+            # Preserve leading whitespace (indentation)
+            leading_spaces = len(line) - len(line.lstrip(' '))
+            leading_tabs = len(line) - len(line.lstrip('\t'))
+            indent_level = leading_spaces  # or leading_tabs — we’ll adjust below
+
+            content = line.lstrip(' \t')  # strip leading whitespace for processing
+
+            # Process Markdown styling in content
+            pos = 0
+            result_parts = []
+            pattern = r'(\*\*\*.*?\*\*\*|\*\*.*?\*\*|\*.*?\*)'
+            matches = list(re.finditer(pattern, content))
+
+            for match in matches:
+                start, end = match.span()
+                # Add unstyled text before match
+                if start > pos:
+                    result_parts.append(content[pos:start])
+                # Process styled part
+                raw = match.group(0)
+                inner = raw.strip('*')
+                if raw.startswith('***') and raw.endswith('***'):
+                    styled = self.apply_style(inner, "bold_italic")
+                elif raw.startswith('**') and raw.endswith('**'):
+                    styled = self.apply_style(inner, "bold")
+                elif raw.startswith('*') and raw.endswith('*'):
+                    styled = self.apply_style(inner, "italic")
+                else:
+                    styled = inner
+                result_parts.append(styled)
+                pos = end
+
+            # Add remaining unstyled text
+            if pos < len(content):
+                result_parts.append(content[pos:])
+
+            # Reconstruct styled content
+            styled_content = "".join(result_parts)
+
+            # Reapply indentation
+            if indent_with_tabs:
+                indent_str = "\t" * (indent_level // spaces_per_indent)
+            else:
+                indent_str = " " * indent_level  # preserve original space count
+
+            output_lines.append(indent_str + styled_content)
+
+        # Join with preserved newlines
+        final_output = "\n".join(output_lines)
+
+        return (final_output,)
 
 #---------------------------------------------------------------------------------------------------------------------#
 # MAPPINGS
