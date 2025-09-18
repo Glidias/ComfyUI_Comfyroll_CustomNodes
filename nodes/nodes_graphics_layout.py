@@ -666,11 +666,11 @@ class CR_SimpleTextPanel:
 
     @classmethod
     def INPUT_TYPES(s):
-
         font_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fonts")
         file_list = [f for f in os.listdir(font_dir) if os.path.isfile(os.path.join(font_dir, f)) and f.lower().endswith(".ttf")]
 
-        return {"required": {
+        return {
+            "required": {
                 "panel_width": ("INT", {"default": 512, "min": 8, "max": 4096}),
                 "panel_height": ("INT", {"default": 512, "min": 8, "max": 4096}),
                 "text": ("STRING", {"multiline": True, "default": "text"}),
@@ -680,17 +680,20 @@ class CR_SimpleTextPanel:
                 "font_outline_thickness": ("INT", {"default": 0, "min": 0, "max": 50}),
                 "font_outline_color": (COLORS,),
                 "background_color": (COLORS,),
-                "align": (ALIGN_OPTIONS, ),
-                "justify": (JUSTIFY_OPTIONS, ),
-               },
-                "optional": {
+                "align": (ALIGN_OPTIONS,),
+                "justify": (JUSTIFY_OPTIONS,),
+                "wrap": ("BOOLEAN", {"default": False}),
+                "margins": ("INT", {"default": 50, "min": 0, "max": 1024}),         # ← Now user-controlled
+                "line_spacing": ("INT", {"default": 0, "min": -1024, "max": 1024}),   # ← Now user-controlled
+            },
+            "optional": {
                 "font_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
                 "bg_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
-               }
+            }
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", )
-    RETURN_NAMES = ("image", "show_help", )
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("image", "show_help")
     FUNCTION = "layout"
     CATEGORY = icons.get("Comfyroll/Graphics/Layout")
 
@@ -699,35 +702,105 @@ class CR_SimpleTextPanel:
                font_name, font_color, font_size,
                font_outline_thickness, font_outline_color,
                background_color,
-               font_color_hex='#000000', font_outline_color_hex='#000000', bg_color_hex='#000000'):
+               wrap=False,
+               margins=50,
+               line_spacing=0,
+               font_color_hex='#000000',
+               font_outline_color_hex='#000000',
+               bg_color_hex='#000000'):
 
-        # Get RGB values for the text and background colors
+        # Get RGB values for colors
         font_color = get_color_values(font_color, font_color_hex, color_mapping)
         outline_color = get_color_values(font_outline_color, font_outline_color_hex, color_mapping)
         bg_color = get_color_values(background_color, bg_color_hex, color_mapping)
 
-        # Set defaults
-        margins = 50
-        line_spacing = 0
-        position_x = 0
-        position_y = 0
-        rotation_angle = 0
-        rotation_options = "image center"
+        # Set defaults (no rotation, no offset)
 
-        ### Create text panels
+        # --- AUTO WORD WRAPPING ---
+        font_path = os.path.join("fonts", font_name)
+        resolved_font_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), font_path)
+        try:
+            font = ImageFont.truetype(resolved_font_path, font_size)
+        except:
+            font = ImageFont.load_default()
 
-        panel = text_panel(panel_width, panel_height, text,
-                           font_name, font_size, font_color,
-                           font_outline_thickness, outline_color,
-                           bg_color,
-                           margins, line_spacing,
-                           position_x, position_y,
-                           align, justify,
-                           rotation_angle, rotation_options)
+        draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+        wrapped_lines = []
 
-        show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-simple-text-panel"
+        if wrap:
+            words = text.split(' ')
+            line = ""
+            available_width = panel_width - 2 * margins
 
-        return (pil2tensor(panel), show_help, )
+            for word in words:
+                test_line = f"{line} {word}".strip()
+                bbox = draw.textbbox((0, 0), test_line, font=font)
+                text_width = bbox[2] - bbox[0]
+                if text_width <= available_width or not line:
+                    line = test_line
+                else:
+                    if line:
+                        wrapped_lines.append(line)
+                        line = word
+                    else:
+                        wrapped_lines.append(word)
+            if line:
+                wrapped_lines.append(line)
+            processed_text = "\n".join(wrapped_lines)
+        else:
+            processed_text = text
+
+        # --- CREATE TEXT PANEL ---
+        panel = text_panel(
+            image_width=panel_width,
+            image_height=panel_height,
+            text=processed_text,
+            font_name=font_name,
+            font_size=font_size,
+            font_color=font_color,
+            font_outline_thickness=font_outline_thickness,
+            font_outline_color=outline_color,
+            background_color=bg_color,
+            margins=margins,
+            line_spacing=line_spacing,
+            position_x=0,
+            position_y=0,
+            align=align,
+            justify=justify,
+            rotation_angle=0,
+            rotation_options="image center"
+        )
+
+        # Convert to tensor
+        result = pil2tensor(panel)
+        output_hash = get_tensor_hash(result)
+
+        # --- BUILD SCENE GRAPH ---
+        content_x = margins
+        content_y = margins
+        content_w = panel_width - 2 * margins
+        content_h = panel_height - 2 * margins
+
+        show_help_data = {
+            "x": 0,
+            "y": 0,
+            "width": panel_width,
+            "height": panel_height,
+            "images": output_hash,
+            "text": {
+                "x": int(content_x),
+                "y": int(content_y),
+                "width": int(content_w),
+                "height": int(content_h),
+                "content": text,
+            }
+        }
+
+        # Comment out old URL
+        # show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Layout-Nodes#cr-simple-text-panel"
+        show_help = json.dumps(show_help_data)
+
+        return (result, show_help)
 
 #---------------------------------------------------------------------------------------------------------------------#
 class CR_OverlayTransparentImage:
