@@ -408,6 +408,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CR Color Tint": "🎨 CR Color Tint",
     "CR Vignette Filter": "🎨 CR Vignette Filter",
     ### Graphics Layout
+    "CR Flattened Layout Regions": "🌁 CR Flattened Layout Regions",
     "CR Image Panel": "🌁 CR Image Panel",
     "CR Image Grid Panel": "🌁 CR Image Grid Panel",
     "CR Simple Text Panel": "🌁 CR Simple Text Panel",
@@ -418,6 +419,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CR Image Border": "🌁 CR Image Border",
     "CR Feathered Border": "🌁 CR Feathered Border",
     "CR Overlay Transparent Image": "🌁 CR Overlay Transparent Image",
+    "CR Overlay Expanded Transparent Image": "🌁+CR Overlay Expanded Transparent Image",
+    "CR Save Image Layout Hash": "🌁 CR Cache Image Layout Hash",
+    "CR Save Image Leaf Data Hash": "🌁 CR Cache Image Leaf Data Hash",
+    "CR Image Hash": "🌁 CR Image Hash",
     "CR KJ Image Resize": "🌁 CR KJ Image Resize",
     ### Graphics Template
     "CR Simple Meme Template": "📱 CR Simple Meme Template",
