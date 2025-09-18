@@ -173,6 +173,7 @@ NODE_CLASS_MAPPINGS = {
     "CR Half Drop Panel": CR_HalfDropPanel,
     "CR Diamond Panel": CR_DiamondPanel,
     #"CR Simple Titles": CR_SimpleTitles,
+    "CR KJ Image Resize": CR_ImageResizeKJ,
     ### Graphics Template
     "CR Simple Meme Template": CR_SimpleMemeTemplate,
     "CR Simple Banner": CR_SimpleBanner,
@@ -417,6 +418,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CR Image Border": "🌁 CR Image Border",
     "CR Feathered Border": "🌁 CR Feathered Border",
     "CR Overlay Transparent Image": "🌁 CR Overlay Transparent Image",
+    "CR KJ Image Resize": "🌁 CR KJ Image Resize",
     ### Graphics Template
     "CR Simple Meme Template": "📱 CR Simple Meme Template",
     "CR Simple Banner": "📱 CR Simple Banner",

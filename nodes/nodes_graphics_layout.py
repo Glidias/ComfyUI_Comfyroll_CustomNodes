@@ -14,6 +14,10 @@ from ..config import iso_sizes
 from .functions_graphics import *
 import threading
 from server import PromptServer
+from nodes import MAX_RESOLUTION
+from comfy.utils import common_upscale
+from comfy import model_management
+import torch.nn.functional as F
 
 #---------------------------------------------------------------------------------------------------------------------#
 
@@ -1444,6 +1448,392 @@ class CR_SelectISOSize:
         show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Other-Nodes#cr-select-iso-size"
 
         return (width, height, show_help, )
+    
+#---------------------------------------------------------------------------------------------------------------------#
+# based off ImageResizeKJv2 in https://github.com/kijai/ComfyUI-KJNodes/blob/main/nodes/image_nodes.py
+class CR_ImageResizeKJ:
+    upscale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "width": ("INT", { "default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1 }),
+                "height": ("INT", { "default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1 }),
+                "upscale_method": (s.upscale_methods,),
+                "keep_proportion": (["stretch", "resize", "pad", "pad_edge", "crop"], { "default": "resize" }),
+                "pad_color": ("STRING", { "default": "0, 0, 0", "tooltip": "Color to use for padding."}),
+                "crop_position": (["center", "top", "bottom", "left", "right"], { "default": "center" }),
+                "divisible_by": ("INT", { "default": 2, "min": 0, "max": 512, "step": 1 }),
+            },
+            "optional": {
+                "mask": ("MASK",),
+                "device": (["cpu", "gpu"],),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "INT", "INT", "MASK")
+    RETURN_NAMES = ("IMAGE", "show_help", "width", "height", "mask")
+    FUNCTION = "resize"
+    CATEGORY = icons.get("Comfyroll/Graphics/Layout")
+    DESCRIPTION = """
+Resizes the image to the specified width and height.
+Size can be retrieved from the input.
+
+Keep proportions keeps the aspect ratio of the image, by
+highest dimension.
+"""
+
+    def resize(self, image, width, height, keep_proportion, upscale_method, divisible_by, pad_color, crop_position, unique_id, device="cpu", mask=None):
+        B, H, W, C = image.shape
+
+        if device == "gpu":
+            if upscale_method == "lanczos":
+                raise Exception("Lanczos is not supported on the GPU")
+            device = model_management.get_torch_device()
+        else:
+            device = torch.device("cpu")
+
+        if width == 0:
+            width = W
+        if height == 0:
+            height = H
+
+        # Preserve original dimensions before any scaling/padding
+        orig_w, orig_h = W, H
+
+        if keep_proportion == "resize" or keep_proportion.startswith("pad"):
+            if width == 0 and height != 0:
+                ratio = height / H
+                new_width = round(W * ratio)
+            elif height == 0 and width != 0:
+                ratio = width / W
+                new_height = round(H * ratio)
+            elif width != 0 and height != 0:
+                ratio = min(width / W, height / H)
+                new_width = round(W * ratio)
+                new_height = round(H * ratio)
+
+            if keep_proportion.startswith("pad"):
+                if crop_position == "center":
+                    pad_left = (width - new_width) // 2
+                    pad_right = width - new_width - pad_left
+                    pad_top = (height - new_height) // 2
+                    pad_bottom = height - new_height - pad_top
+                elif crop_position == "top":
+                    pad_left = (width - new_width) // 2
+                    pad_right = width - new_width - pad_left
+                    pad_top = 0
+                    pad_bottom = height - new_height
+                elif crop_position == "bottom":
+                    pad_left = (width - new_width) // 2
+                    pad_right = width - new_width - pad_left
+                    pad_top = height - new_height
+                    pad_bottom = 0
+                elif crop_position == "left":
+                    pad_left = 0
+                    pad_right = width - new_width
+                    pad_top = (height - new_height) // 2
+                    pad_bottom = height - new_height - pad_top
+                elif crop_position == "right":
+                    pad_left = width - new_width
+                    pad_right = 0
+                    pad_top = (height - new_height) // 2
+                    pad_bottom = height - new_height - pad_top
+
+            width = new_width
+            height = new_height
+
+        if divisible_by > 1:
+            width = width - (width % divisible_by)
+            height = height - (height % divisible_by)
+
+        out_image = image.clone().to(device)
+
+        if mask is not None:
+            out_mask = mask.clone().to(device)
+        else:
+            out_mask = None
+
+        # Track whether we're cropping
+        pad_left_final = pad_right_final = pad_top_final = pad_bottom_final = 0
+        final_w, final_h = width, height
+
+        if keep_proportion == "crop":
+            old_aspect = W / H
+            new_aspect = width / height
+
+            if old_aspect > new_aspect:
+                crop_w = round(H * new_aspect)
+                crop_h = H
+            else:
+                crop_w = W
+                crop_h = round(W / new_aspect)
+
+            if crop_position == "center":
+                x = (W - crop_w) // 2
+                y = (H - crop_h) // 2
+            elif crop_position == "top":
+                x = (W - crop_w) // 2
+                y = 0
+            elif crop_position == "bottom":
+                x = (W - crop_w) // 2
+                y = H - crop_h
+            elif crop_position == "left":
+                x = 0
+                y = (H - crop_h) // 2
+            elif crop_position == "right":
+                x = W - crop_w
+                y = (H - crop_h) // 2
+
+            out_image = out_image.narrow(-2, x, crop_w).narrow(-3, y, crop_h)
+            if mask is not None:
+                out_mask = out_mask.narrow(-1, x, crop_w).narrow(-2, y, crop_h)
+            final_w, final_h = crop_w, crop_h
+        else:
+            pad_left_final = pad_right_final = pad_top_final = pad_bottom_final = 0
+            if keep_proportion.startswith("pad"):
+                pad_left_final = pad_left
+                pad_right_final = pad_right
+                pad_top_final = pad_top
+                pad_bottom_final = pad_bottom
+                final_w, final_h = width + pad_left + pad_right, height + pad_top + pad_bottom
+
+        # Resize
+        out_image = common_upscale(out_image.movedim(-1,1), width, height, upscale_method, crop="disabled").movedim(1,-1)
+
+        if mask is not None:
+            if upscale_method == "lanczos":
+                out_mask = common_upscale(out_mask.unsqueeze(1).repeat(1, 3, 1, 1), width, height, upscale_method, crop="disabled").movedim(1,-1)[:, :, :, 0]
+            else:
+                out_mask = common_upscale(out_mask.unsqueeze(1), width, height, upscale_method, crop="disabled").squeeze(1)
+
+        # Apply padding
+        if keep_proportion.startswith("pad"):
+            if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
+                padded_width = width + pad_left + pad_right
+                padded_height = height + pad_top + pad_bottom
+                if divisible_by > 1:
+                    width_remainder = padded_width % divisible_by
+                    height_remainder = padded_height % divisible_by
+                    if width_remainder > 0:
+                        extra_width = divisible_by - width_remainder
+                        pad_right += extra_width
+                    if height_remainder > 0:
+                        extra_height = divisible_by - height_remainder
+                        pad_bottom += extra_height
+                out_image, _ = self.pad(out_image, pad_left, pad_right, pad_top, pad_bottom, 0, pad_color, "edge" if keep_proportion == "pad_edge" else "color")
+                if mask is not None:
+                    out_mask = out_mask.unsqueeze(1).repeat(1, 3, 1, 1).movedim(1,-1)
+                    out_mask, _ = self.pad(out_mask, pad_left, pad_right, pad_top, pad_bottom, 0, pad_color, "edge" if keep_proportion == "pad_edge" else "color")
+                    out_mask = out_mask[:, :, :, 0]
+                else:
+                    B, H_pad, W_pad, _ = out_image.shape
+                    out_mask = torch.ones((B, H_pad, W_pad), dtype=out_image.dtype, device=out_image.device)
+                    out_mask[:, pad_top:pad_top+height, pad_left:pad_left+width] = 0.0
+
+        # --- BUILD SCENE GRAPH ---
+        # Hash comes from first input image (source identity)
+        input_hash = get_tensor_hash(image[0].unsqueeze(0))  # Use first frame's hash
+
+        # Final canvas size
+        canvas_w = out_image.shape[2]
+        canvas_h = out_image.shape[1]
+
+        # Position and size of content
+        content_x = pad_left_final
+        content_y = pad_top_final
+        content_w = width
+        content_h = height
+
+        show_help_data = {
+            "x": 0,
+            "y": 0,
+            "width": canvas_w,
+            "height": canvas_h,
+            "images": [
+                {
+                    "x": int(content_x),
+                    "y": int(content_y),
+                    "width": int(content_w),
+                    "height": int(content_h),
+                    "images": input_hash  # Scalar string hash
+                }
+            ]
+        }
+
+        show_help = json.dumps(show_help_data)
+
+        # Memory reporting
+        if unique_id and PromptServer is not None:
+            try:
+                num_elements = out_image.numel()
+                element_size = out_image.element_size()
+                memory_size_mb = (num_elements * element_size) / (1024 * 1024)
+                PromptServer.instance.send_progress_text(
+                    f"<tr><td>Output: </td><td><b>{out_image.shape[0]}</b> x <b>{out_image.shape[2]}</b> x <b>{out_image.shape[1]} | {memory_size_mb:.2f}MB</b></td></tr>",
+                    unique_id
+                )
+            except:
+                pass
+
+        return (
+            out_image.cpu(),
+            show_help,
+            out_image.shape[2],
+            out_image.shape[1],
+            out_mask.cpu() if out_mask is not None else torch.zeros(64, 64, device=torch.device("cpu"), dtype=torch.float32)
+        )
+    
+
+    def pad(self, image, left, right, top, bottom, extra_padding, color, pad_mode, mask=None, target_width=None, target_height=None):
+        B, H, W, C = image.shape
+        # Resize masks to image dimensions if necessary
+        if mask is not None:
+            BM, HM, WM = mask.shape
+            if HM != H or WM != W:
+                mask = F.interpolate(mask.unsqueeze(1), size=(H, W), mode='nearest-exact').squeeze(1)
+
+        # Parse background color
+        bg_color = [int(x.strip())/255.0 for x in color.split(",")]
+        if len(bg_color) == 1:
+            bg_color = bg_color * 3  # Grayscale to RGB
+        bg_color = torch.tensor(bg_color, dtype=image.dtype, device=image.device)
+
+        # Calculate padding sizes with extra padding
+        if target_width is not None and target_height is not None:
+            if extra_padding > 0:
+                image = common_upscale(image.movedim(-1, 1), W - extra_padding, H - extra_padding, "lanczos", "disabled").movedim(1, -1)
+                B, H, W, C = image.shape
+
+            padded_width = target_width
+            padded_height = target_height
+            pad_left = (padded_width - W) // 2
+            pad_right = padded_width - W - pad_left
+            pad_top = (padded_height - H) // 2
+            pad_bottom = padded_height - H - pad_top
+        else:
+            pad_left = left + extra_padding
+            pad_right = right + extra_padding
+            pad_top = top + extra_padding
+            pad_bottom = bottom + extra_padding
+
+            padded_width = W + pad_left + pad_right
+            padded_height = H + pad_top + pad_bottom
+
+        # Pillarbox blur mode
+        if pad_mode == "pillarbox_blur":
+            def _gaussian_blur_nchw(img_nchw, sigma_px):
+                if sigma_px <= 0:
+                    return img_nchw
+                radius = max(1, int(3.0 * float(sigma_px)))
+                k = 2 * radius + 1
+                x = torch.arange(-radius, radius + 1, device=img_nchw.device, dtype=img_nchw.dtype)
+                k1 = torch.exp(-(x * x) / (2.0 * float(sigma_px) * float(sigma_px)))
+                k1 = k1 / k1.sum()
+                kx = k1.view(1, 1, 1, k)
+                ky = k1.view(1, 1, k, 1)
+                c = img_nchw.shape[1]
+                kx = kx.repeat(c, 1, 1, 1)
+                ky = ky.repeat(c, 1, 1, 1)
+                img_nchw = F.conv2d(img_nchw, kx, padding=(0, radius), groups=c)
+                img_nchw = F.conv2d(img_nchw, ky, padding=(radius, 0), groups=c)
+                return img_nchw
+
+            out_image = torch.zeros((B, padded_height, padded_width, C), dtype=image.dtype, device=image.device)
+            for b in range(B):
+                scale_fill = max(padded_width / float(W), padded_height / float(H)) if (W > 0 and H > 0) else 1.0
+                bg_w = max(1, int(round(W * scale_fill)))
+                bg_h = max(1, int(round(H * scale_fill)))
+                src_b = image[b].movedim(-1, 0).unsqueeze(0)
+                bg = common_upscale(src_b, bg_w, bg_h, "bilinear", crop="disabled")
+                y0 = max(0, (bg_h - padded_height) // 2)
+                x0 = max(0, (bg_w - padded_width) // 2)
+                y1 = min(bg_h, y0 + padded_height)
+                x1 = min(bg_w, x0 + padded_width)
+                bg = bg[:, :, y0:y1, x0:x1]
+                if bg.shape[2] != padded_height or bg.shape[3] != padded_width:
+                    pad_h = padded_height - bg.shape[2]
+                    pad_w = padded_width - bg.shape[3]
+                    pad_top_fix = max(0, pad_h // 2)
+                    pad_bottom_fix = max(0, pad_h - pad_top_fix)
+                    pad_left_fix = max(0, pad_w // 2)
+                    pad_right_fix = max(0, pad_w - pad_left_fix)
+                    bg = F.pad(bg, (pad_left_fix, pad_right_fix, pad_top_fix, pad_bottom_fix), mode="replicate")
+                sigma = max(1.0, 0.006 * float(min(padded_height, padded_width)))
+                bg = _gaussian_blur_nchw(bg, sigma_px=sigma)
+                if C >= 3:
+                    r, g, bch = bg[:, 0:1], bg[:, 1:2], bg[:, 2:3]
+                    luma = 0.2126 * r + 0.7152 * g + 0.0722 * bch
+                    gray = torch.cat([luma, luma, luma], dim=1)
+                    desat = 0.20
+                    rgb = torch.cat([r, g, bch], dim=1)
+                    rgb = rgb * (1.0 - desat) + gray * desat
+                    bg[:, 0:3, :, :] = rgb
+                dim = 0.35
+                bg = torch.clamp(bg * dim, 0.0, 1.0)
+                out_image[b] = bg.squeeze(0).movedim(0, -1)
+            out_image[:, pad_top:pad_top+H, pad_left:pad_left+W, :] = image
+            # Mask handling for pillarbox_blur
+            if mask is not None:
+                fg_mask = mask
+                out_masks = torch.ones((B, padded_height, padded_width), dtype=image.dtype, device=image.device)
+                out_masks[:, pad_top:pad_top+H, pad_left:pad_left+W] = fg_mask
+            else:
+                out_masks = torch.ones((B, padded_height, padded_width), dtype=image.dtype, device=image.device)
+                out_masks[:, pad_top:pad_top+H, pad_left:pad_left+W] = 0.0
+            return (out_image, out_masks)
+
+        # Standard pad logic (edge/color)
+        out_image = torch.zeros((B, padded_height, padded_width, C), dtype=image.dtype, device=image.device)
+        for b in range(B):
+                if pad_mode == "edge":
+                    # Pad with edge color (mean)
+                    top_edge = image[b, 0, :, :]
+                    bottom_edge = image[b, H-1, :, :]
+                    left_edge = image[b, :, 0, :]
+                    right_edge = image[b, :, W-1, :]
+                    out_image[b, :pad_top, :, :] = top_edge.mean(dim=0)
+                    out_image[b, pad_top+H:, :, :] = bottom_edge.mean(dim=0)
+                    out_image[b, :, :pad_left, :] = left_edge.mean(dim=0)
+                    out_image[b, :, pad_left+W:, :] = right_edge.mean(dim=0)
+                    out_image[b, pad_top:pad_top+H, pad_left:pad_left+W, :] = image[b]
+                elif pad_mode == "edge_pixel":
+                    # Pad with exact edge pixel values
+                    for y in range(pad_top):
+                        out_image[b, y, pad_left:pad_left+W, :] = image[b, 0, :, :]
+                    for y in range(pad_top+H, padded_height):
+                        out_image[b, y, pad_left:pad_left+W, :] = image[b, H-1, :, :]
+                    for x in range(pad_left):
+                        out_image[b, pad_top:pad_top+H, x, :] = image[b, :, 0, :]
+                    for x in range(pad_left+W, padded_width):
+                        out_image[b, pad_top:pad_top+H, x, :] = image[b, :, W-1, :]
+                    out_image[b, :pad_top, :pad_left, :] = image[b, 0, 0, :]
+                    out_image[b, :pad_top, pad_left+W:, :] = image[b, 0, W-1, :]
+                    out_image[b, pad_top+H:, :pad_left, :] = image[b, H-1, 0, :]
+                    out_image[b, pad_top+H:, pad_left+W:, :] = image[b, H-1, W-1, :]
+                    out_image[b, pad_top:pad_top+H, pad_left:pad_left+W, :] = image[b]
+                else:
+                    # Pad with specified background color
+                    out_image[b, :, :, :] = bg_color.unsqueeze(0).unsqueeze(0)
+                    out_image[b, pad_top:pad_top+H, pad_left:pad_left+W, :] = image[b]
+
+        if mask is not None:
+            out_masks = torch.nn.functional.pad(
+                mask, 
+                (pad_left, pad_right, pad_top, pad_bottom),
+                mode='replicate'
+            )
+        else:
+            out_masks = torch.ones((B, padded_height, padded_width), dtype=image.dtype, device=image.device)
+            for m in range(B):
+                out_masks[m, pad_top:pad_top+H, pad_left:pad_left+W] = 0.0
+
+        return (out_image, out_masks)
 
 #---------------------------------------------------------------------------------------------------------------------#
 # MAPPINGS
