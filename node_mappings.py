@@ -421,7 +421,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CR Overlay Transparent Image": "🌁 CR Overlay Transparent Image",
     "CR Overlay Expanded Transparent Image": "🌁+CR Overlay Expanded Transparent Image",
     "CR Save Image Layout Hash": "🌁 CR Cache Image Layout Hash",
-    "CR Save Image Leaf Data Hash": "🌁 CR Cache Image Leaf Data Hash",
+    "CR Save Image Leaf Data Hash": "🍀 CR Cache Image Leaf Data Hash",
     "CR Image Hash": "🌁 CR Image Hash",
     "CR KJ Image Resize": "🌁 CR KJ Image Resize",
     ### Graphics Template
