@@ -43,7 +43,7 @@ class PerRunCache:
             if cls._instance is None:
                 cls._instance = cls()
         return cls._instance
-    
+
     def setLayout(self, key, value):
         # if leaf data already found, will not set layout assumed already resolve
         if self.GLOBAL_SAVE_LEAF_DATA.get(key) is not None:
@@ -52,13 +52,13 @@ class PerRunCache:
 
     def getLayout(self, key):
         return self.GLOBAL_SAVE_LAYOUTS.get(key, None)
-    
+
     def getLayoutDict(self):
         return self.GLOBAL_SAVE_LAYOUTS
-    
+
     def getLeafDataDict(self):
         return self.GLOBAL_SAVE_LEAF_DATA
-    
+
     def setLeafData(self, key, value):
         if self.GLOBAL_SAVE_LEAF_DATA.get(key) is not None:
            raise ValueError(f"Leaf data for key {key} already set.")
@@ -69,18 +69,18 @@ class PerRunCache:
 
     def getLeafData(self, key):
         return self.GLOBAL_SAVE_LEAF_DATA.get(key, None)
-    
+
     def clear(self):
         self.GLOBAL_SAVE_LAYOUTS.clear()
         self.GLOBAL_SAVE_LEAF_DATA.clear()
-    
+
 
 @PromptServer.instance.add_on_prompt_handler
 def _(prompt):
     PerRunCache.get().clear()
     return prompt
-    
-    
+
+
 #---------------------------------------------------------------------------------------------------------------------#
 class CR_GetImageHash:
 
@@ -139,8 +139,8 @@ class CR_SaveImageLeafData:
                 "json_data_str": ("STRING",),
                }
         }
-    
-    RETURN_TYPES = ()  
+
+    RETURN_TYPES = ()
     OUTPUT_NODE = True
     FUNCTION = "execute"
 
@@ -152,7 +152,6 @@ class CR_SaveImageLeafData:
         return float("NaN")
 
     def execute(self, image, json_data_str):
-        # verify json_node_str is valid json
         try:
             json.loads(json_data_str)
         except json.JSONDecodeError:
@@ -160,8 +159,8 @@ class CR_SaveImageLeafData:
         image_hash = f'"{get_tensor_hash(image)}"'
         PerRunCache.get().setLeafData(image_hash, json_data_str)
         print(f"Set Leaf Data for image hash: {image_hash}: {json_data_str}")
-        return ()  # Return an empty tuple
-    
+        return ()
+
 
 class CR_SaveImageHashLayout:
     @classmethod
@@ -171,8 +170,8 @@ class CR_SaveImageHashLayout:
                 "json_node_str": ("STRING",),
                }
         }
-    
-    RETURN_TYPES = ()  
+
+    RETURN_TYPES = ()
     OUTPUT_NODE = True
     FUNCTION = "execute"
 
@@ -184,16 +183,14 @@ class CR_SaveImageHashLayout:
         return float("NaN")
 
     def execute(self, image, json_node_str):
-        # verify json_node_str is valid json
         try:
             json.loads(json_node_str)
         except json.JSONDecodeError:
             raise ValueError("Invalid JSON format in json_node_str.")
-        
         image_hash = f'"{get_tensor_hash(image)}"'
         PerRunCache.get().setLayout(image_hash, json_node_str)
         print(f"Set Layout for image hash: {image_hash}: {json_node_str}")
-        return ()  # Return an empty tuple
+        return ()
 
 """
 Converts a JSON layout tree structure into a flattened list of image regions with their global coordinates and dimensions.
@@ -237,7 +234,7 @@ class CR_FlattenedLayoutRegionsJSON:
         # print(GLOBAL_SAVE_LAYOUTS)
         # print("Checking leaf data replacements...")
         # print(GLOBAL_SAVE_LEAF_DATA)
-      
+
         data_json = data_json.strip()
 
         replaced = True
@@ -408,12 +405,12 @@ class CR_PageLayout:
             header_image_pil = tensor2pil(header_image)
         else:
             header_image_pil = None
-            
+
 
         if footer_image is not None:
-            footer_image_pil = tensor2pil(footer_image) 
+            footer_image_pil = tensor2pil(footer_image)
         else:
-            footer_image_pil = None 
+            footer_image_pil = None
 
         # Get image width and height
         image_width = main_panel.width
@@ -1531,7 +1528,7 @@ class CR_SelectISOSize:
         show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Other-Nodes#cr-select-iso-size"
 
         return (width, height, show_help, )
-    
+
 #---------------------------------------------------------------------------------------------------------------------#
 # based off ImageResizeKJv2 in https://github.com/kijai/ComfyUI-KJNodes/blob/main/nodes/image_nodes.py
 class CR_ImageResizeKJ:
@@ -1771,7 +1768,7 @@ highest dimension.
             out_image.shape[1],
             out_mask.cpu() if out_mask is not None else torch.zeros(64, 64, device=torch.device("cpu"), dtype=torch.float32)
         )
-    
+
 
     def pad(self, image, left, right, top, bottom, extra_padding, color, pad_mode, mask=None, target_width=None, target_height=None):
         B, H, W, C = image.shape
