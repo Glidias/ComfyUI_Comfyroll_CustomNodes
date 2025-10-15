@@ -4,9 +4,11 @@
 #---------------------------------------------------------------------------------------------------------------------#
 
 import json
+import re
 import numpy as np
 import torch
 import os
+import hashlib
 from PIL import Image, ImageDraw, ImageOps, ImageFont, ImageFilter
 from ..categories import icons
 from ..config import color_mapping, COLORS
@@ -15,7 +17,7 @@ from .functions_graphics import *
 import threading
 from server import PromptServer
 from nodes import MAX_RESOLUTION
-from comfy.utils import common_upscale
+from comfy.utils import common_upscale, ProgressBar
 from comfy import model_management
 import torch.nn.functional as F
 
@@ -1905,7 +1907,7 @@ highest dimension.
 
         if mask is not None:
             out_masks = torch.nn.functional.pad(
-                mask, 
+                mask,
                 (pad_left, pad_right, pad_top, pad_bottom),
                 mode='replicate'
             )
@@ -1915,6 +1917,352 @@ highest dimension.
                 out_masks[m, pad_top:pad_top+H, pad_left:pad_left+W] = 0.0
 
         return (out_image, out_masks)
+
+
+#---------------------------------------------------------------------------------------------------------------------#
+# based off LoadImagesFromFolderKJ in https://github.com/kijai/ComfyUI-KJNodes/blob/main/nodes/image_nodes.py
+# but with some additional changes
+class CR_LoadImagesFromFolderKJ:
+    # Dictionary to store folder hashes (for IS_CHANGED)
+    folder_hashes = {}
+
+    @classmethod
+    def IS_CHANGED(cls, folder, **kwargs):
+        if not os.path.isdir(folder):
+            return float("NaN")
+
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.tga']
+        include_subfolders = kwargs.get('include_subfolders', False)
+
+        file_data = []
+        if include_subfolders:
+            for root, _, files in os.walk(folder):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in valid_extensions):
+                        path = os.path.join(root, file)
+                        try:
+                            mtime = os.path.getmtime(path)
+                            file_data.append((path, mtime))
+                        except OSError:
+                            pass
+        else:
+            for file in os.listdir(folder):
+                if any(file.lower().endswith(ext) for ext in valid_extensions):
+                    path = os.path.join(folder, file)
+                    try:
+                        mtime = os.path.getmtime(path)
+                        file_data.append((path, mtime))
+                    except OSError:
+                        pass
+
+        file_data.sort()
+
+        combined_hash = hashlib.md5()
+        combined_hash.update(folder.encode('utf-8'))
+        combined_hash.update(str(len(file_data)).encode('utf-8'))
+
+        for path, mtime in file_data:
+            combined_hash.update(f"{path}:{mtime}".encode('utf-8'))
+
+        current_hash = combined_hash.hexdigest()
+
+        old_hash = cls.folder_hashes.get(folder)
+        cls.folder_hashes[folder] = current_hash
+
+        if old_hash == current_hash:
+            return old_hash
+
+        return current_hash
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "folder": ("STRING", {"default": ""}),
+                "width": ("INT", {"default": 0, "min": -1, "step": 1}),
+                "height": ("INT", {"default": 0, "min": -1, "step": 1}),
+                "keep_aspect_ratio": (["crop", "pad", "stretch"],),
+                "filter_select": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "One filename, stem, or absolute path per line."
+                }),
+            },
+            "optional": {
+                "image_load_cap": ("INT", {"default": 0, "min": 0, "step": 1}),
+                "start_index": ("INT", {"default": 0, "min": 0, "step": 1}),
+                "include_subfolders": ("BOOLEAN", {"default": False}),
+                "fail_on_missing_filter": ("BOOLEAN", {"default": False}),
+                "use_largest_size": ("BOOLEAN", {"default": False}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("image", "mask", "count", "image_path", "show_help")
+    OUTPUT_IS_LIST = (False, False, False, True, False)
+    FUNCTION = "load_images"
+    CATEGORY = "KJNodes/image"
+    DESCRIPTION = """Loads images from a folder into a batch. Supports filtering via exact name/stem or absolute paths."""
+
+    def load_images(self, folder, width, height, keep_aspect_ratio, filter_select,
+                image_load_cap=0, start_index=0, include_subfolders=False, fail_on_missing_filter=False, use_largest_size=False):
+
+        if not os.path.isdir(folder):
+            raise FileNotFoundError(f"Folder '{folder}' cannot be found.")
+
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.tga']
+
+        # --- SCAN ONCE: Original logic preserved ---
+        image_paths = []
+        if include_subfolders:
+            for root, _, files in os.walk(folder):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in valid_extensions):
+                        image_paths.append(os.path.join(root, file))
+        else:
+            for file in os.listdir(folder):
+                if any(file.lower().endswith(ext) for ext in valid_extensions):
+                    image_paths.append(os.path.join(folder, file))
+
+        dir_files = sorted(image_paths)
+        # --- END SCAN ---
+
+        if len(dir_files) == 0:
+            raise FileNotFoundError(f"No files in directory '{folder}'.")
+
+        # Parse filter lines
+
+        selected_files = []
+        warnings = []
+
+        if not filter_select.strip():
+            # No filter → use all scanned files
+            selected_files = dir_files
+        else:
+            filter_lines = [line.strip() for line in filter_select.split('\n') if line.strip()]
+            abs_path_regex = re.compile(r"^[/\\]|[a-zA-Z]:[/\\]")
+            # Otherwise, apply filtering per line
+            for line in filter_lines:
+                is_absolute = abs_path_regex.match(line)
+                resolved_path = line.replace('\\', '/')
+
+                if is_absolute:
+                    if not os.path.isfile(resolved_path):
+                        raise FileNotFoundError(f"Absolute path image not found: {resolved_path}")
+                    selected_files.append(resolved_path)
+                else:
+                    matched = False
+                    for fp in dir_files:
+                        fname = os.path.basename(fp)
+                        stem = fname.split('.')[0]  # First part only
+                        if fname == line or stem == line:
+                            selected_files.append(fp)
+                            matched = True
+                            break
+                    if not matched:
+                        msg = f"[CR_LoadImagesFromFolderKJ] Filter '{line}' matched no files in '{folder}'."
+                        print(msg)
+                        warnings.append(msg)
+                        if fail_on_missing_filter:
+                            raise ValueError(msg)
+
+        # Apply start_index and cap
+        selected_files = selected_files[start_index:]
+        if image_load_cap > 0:
+            selected_files = selected_files[:image_load_cap]
+
+        images = []
+        masks = []
+        image_path_list = []
+        show_help_images_list = []
+
+        pbar = ProgressBar(len(selected_files))
+
+        if use_largest_size and (width <= 0 or height <= 0):
+            # No explicit canvas size specified, attempt
+            # to determine based off largest dimensions among selected images
+            max_w = 0
+            max_h = 0
+            for image_path in selected_files:
+                if os.path.isdir(image_path):
+                    continue
+
+                i = Image.open(image_path)
+                i = ImageOps.exif_transpose(i)
+
+                # target size routine
+                target_w = width if width != -1 else i.size[0]
+                target_h = height if height != -1 else i.size[1]
+                if target_w == 0 and target_h > 0:
+                    target_w = int(target_h * (i.size[0] / i.size[1]))
+                elif target_w > 0 and target_h == 0:
+                    target_h = int(target_w * (i.size[1] / i.size[0]))
+                elif target_w == 0 and target_h == 0:
+                    target_w, target_h = i.size
+
+                if target_w > max_w:
+                    max_w = target_w
+                if target_h > max_h:
+                    max_h = target_h
+
+            width = max_w if width <= 0 else width
+            height = max_h if height <= 0 else height
+
+
+        target_w = width
+        target_h = height
+
+        for image_path in selected_files:
+            if os.path.isdir(image_path):
+                continue
+
+            i = Image.open(image_path)
+            i = ImageOps.exif_transpose(i)
+
+            # target size routine
+            target_w = width if width != -1 else i.size[0]
+            target_h = height if height != -1 else i.size[1]
+            if target_w == 0 and target_h > 0:
+                target_w = int(target_h * (i.size[0] / i.size[1]))
+            elif target_h == 0 and target_w > 0:
+                target_h = int(target_w * (i.size[1] / i.size[0]))
+            elif target_w == 0 and target_h == 0:
+                target_w, target_h = i.size
+
+            if i.size != (target_w, target_h):
+                (i, cx, cy, cwidth, cheight) = self.resize_with_aspect_ratio(i, target_w, target_h, keep_aspect_ratio)
+
+            # Convert to tensor
+            image = i.convert("RGB")
+            image_tensor = pil2tensor(image)
+            images.append(image_tensor)
+
+            # Create mask
+            if 'A' in i.getbands():
+                mask = np.array(i.getchannel('A')).astype(np.float32) / 255.0
+                mask = 1. - torch.from_numpy(mask)
+                if mask.shape != (target_h, target_w):
+                    mask = torch.nn.functional.interpolate(
+                        mask.unsqueeze(0).unsqueeze(0),
+                        size=(target_h, target_w),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze()
+            else:
+                mask = torch.zeros((target_h, target_w), dtype=torch.float32)
+
+            masks.append(mask)
+            image_path_list.append(image_path)
+
+            # Record position for show_help
+            img_hash = get_tensor_hash(image_tensor)
+            show_help_images_list.append({
+                "x": cx,
+                "y": cy,
+                "width": cwidth,
+                "height": cheight,
+                "images": img_hash
+            })
+
+            pbar.update(1)
+
+        # Stack images
+        if len(images) == 0:
+            raise ValueError("No valid images to load.")
+
+        show_help = json.dumps(
+            {
+                "x": 0,
+                "y": 0,
+                "width": target_w,
+                "height": target_h,
+                "images": show_help_images_list
+            }
+        )
+
+        if len(images) == 1:
+            result = (images[0], masks[0], 1, image_path_list, show_help)
+        else:
+            image_batch = torch.cat(images, dim=0)
+            mask_batch = torch.stack(masks, dim=0)
+            result = (image_batch, mask_batch, len(images), image_path_list, show_help)
+
+        return result
+
+    def resize_with_aspect_ratio(self, img, width, height, mode):
+        if mode == "stretch":
+            return img.resize((width, height), Image.Resampling.LANCZOS)
+
+        img_width, img_height = img.size
+        aspect_ratio = img_width / img_height
+        target_ratio = width / height
+
+        if mode == "crop":
+            # Calculate dimensions for center crop
+            if aspect_ratio > target_ratio:
+                # Image is wider - crop width
+                new_width = int(height * aspect_ratio)
+                img = img.resize((new_width, height), Image.Resampling.LANCZOS)
+                left = (new_width - width) // 2
+                crop_data = (left, 0, left + width, height)
+                return (img.crop(crop_data),
+                        crop_data[0], crop_data[1],
+                        crop_data[2]-crop_data[0], crop_data[3] - crop_data[1]
+                        )
+            else:
+                # Image is taller - crop height
+                new_height = int(width / aspect_ratio)
+                img = img.resize((width, new_height), Image.Resampling.LANCZOS)
+                top = (new_height - height) // 2
+                crop_data = (0, top, width, top + height)
+                return (img.crop(crop_data),
+                        crop_data[0], crop_data[1],
+                        crop_data[2]-crop_data[0], crop_data[3] - crop_data[1]
+                        )
+
+        elif mode == "pad":
+            pad_color = self.get_edge_color(img)
+            # Calculate dimensions for padding
+            if aspect_ratio > target_ratio:
+                # Image is wider - pad height
+                new_height = int(width / aspect_ratio)
+                img = img.resize((width, new_height), Image.Resampling.LANCZOS)
+                padding = (height - new_height) // 2
+                padded = Image.new('RGBA', (width, height), pad_color)
+                padded.paste(img, (0, padding))
+                return (padded, 0, padding,  width, new_height)
+            else:
+                # Image is taller - pad width
+                new_width = int(height * aspect_ratio)
+                img = img.resize((new_width, height), Image.Resampling.LANCZOS)
+                padding = (width - new_width) // 2
+                padded = Image.new('RGBA', (width, height), pad_color)
+                padded.paste(img, (padding, 0))
+                return (padded, padding, 0, new_width, height)
+    def get_edge_color(self, img):
+        from PIL import ImageStat
+        """Sample edges and return dominant color"""
+        width, height = img.size
+        img = img.convert('RGBA')
+
+        # Create 1-pixel high/wide images from edges
+        top = img.crop((0, 0, width, 1))
+        bottom = img.crop((0, height-1, width, height))
+        left = img.crop((0, 0, 1, height))
+        right = img.crop((width-1, 0, width, height))
+
+        # Combine edges into single image
+        edges = Image.new('RGBA', (width*2 + height*2, 1))
+        edges.paste(top, (0, 0))
+        edges.paste(bottom, (width, 0))
+        edges.paste(left.resize((height, 1)), (width*2, 0))
+        edges.paste(right.resize((height, 1)), (width*2 + height, 0))
+
+        # Get median color
+        stat = ImageStat.Stat(edges)
+        median = tuple(map(int, stat.median))
+        return median
+
 
 #---------------------------------------------------------------------------------------------------------------------#
 # MAPPINGS

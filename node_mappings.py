@@ -175,6 +175,7 @@ NODE_CLASS_MAPPINGS = {
     "CR Diamond Panel": CR_DiamondPanel,
     #"CR Simple Titles": CR_SimpleTitles,
     "CR KJ Image Resize": CR_ImageResizeKJ,
+    "CR Load Images From Folder KJ": CR_LoadImagesFromFolderKJ,
     ### Graphics Template
     "CR Simple Meme Template": CR_SimpleMemeTemplate,
     "CR Simple Banner": CR_SimpleBanner,
@@ -425,6 +426,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CR Save Image Leaf Data Hash": "🍀 CR Cache Image Leaf Data Hash",
     "CR Image Hash": "🌁 CR Image Hash",
     "CR KJ Image Resize": "🌁 CR KJ Image Resize",
+    "CR Load Images From Folder KJ": "🌁 CR KJ Load Images From Folder",
     ### Graphics Template
     "CR Simple Meme Template": "📱 CR Simple Meme Template",
     "CR Simple Banner": "📱 CR Simple Banner",
