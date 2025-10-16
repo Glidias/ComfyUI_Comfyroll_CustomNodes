@@ -164,6 +164,7 @@ NODE_CLASS_MAPPINGS = {
     "CR Save Image Leaf Data Hash": CR_SaveImageLeafData,
     "CR Page Layout": CR_PageLayout,
     "CR Image Panel": CR_ImagePanel,
+    "CR Image List Panel": CR_ImageListPanel,
     "CR Image Grid Panel": CR_ImageGridPanel,
     "CR Image Border": CR_ImageBorder,
     "CR Feathered Border": CR_FeatheredBorder,

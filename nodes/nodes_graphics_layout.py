@@ -679,6 +679,60 @@ class CR_ImagePanel:
         return (pil2tensor(combined_image), show_help, )
 
 #---------------------------------------------------------------------------------------------------------------------#
+class CR_ImageListPanel:
+    @classmethod
+    def INPUT_TYPES(s):
+        directions = ["horizontal", "vertical"]
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "border_thickness": ("INT", {"default": 0, "min": 0, "max": 1024}),
+                "border_color": (COLORS,),
+                "outline_thickness": ("INT", {"default": 0, "min": 0, "max": 1024}),
+                "outline_color": (COLORS[1:],),
+                "layout_direction": (directions,),
+            },
+            "optional": {
+                "border_color_hex": ("STRING", {"multiline": False, "default": "#000000"})
+            }
+        }
+
+    INPUT_IS_LIST = True
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("image", "show_help")
+    FUNCTION = "make_panel"
+    CATEGORY = icons.get("Comfyroll/Graphics/Layout")
+
+    def make_panel(self, images, border_thickness, border_color, outline_thickness, outline_color, layout_direction, border_color_hex='#000000'):
+
+        border_color = get_color_values(border_color, border_color_hex, color_mapping)
+        pil_images = [tensor2pil(img) for img in images]
+        image_tensor_hash_list = [get_tensor_hash(img) for img in images]
+        pil_images = apply_outline_and_border(
+            pil_images, outline_thickness, outline_color, border_thickness, border_color
+        )
+        combined_image, combined_images_positions = combine_images2(pil_images, layout_direction)
+        offset_padding = border_thickness + outline_thickness
+
+        # Generate show_help metadata
+        show_help = json.dumps({
+            "width": combined_image.width,
+            "height": combined_image.height,
+            "images": [
+                {
+                    "x": coord[0] + offset_padding,
+                    "y": coord[1] + offset_padding,
+                    "width": pil_images[idx].width - 2 * offset_padding,
+                    "height": pil_images[idx].height - 2 * offset_padding,
+                    "hash": image_tensor_hash_list[idx],
+                }
+                for idx, coord in enumerate(combined_images_positions)
+            ]
+        })
+        # Return as standard ComfyUI image tensor
+        return (pil2tensor(combined_image), show_help, )
+
+#---------------------------------------------------------------------------------------------------------------------#
 class CR_ImageGridPanel:
 
     @classmethod
