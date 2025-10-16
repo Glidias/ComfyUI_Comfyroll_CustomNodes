@@ -866,8 +866,8 @@ class CR_SimpleTextPanel:
 
         return {
             "required": {
-                "panel_width": ("INT", {"default": 512, "min": 8, "max": 4096}),
-                "panel_height": ("INT", {"default": 512, "min": 8, "max": 4096}),
+                "panel_width": ("INT", {"default": 512, "min": 1, "max": 4096}),
+                "panel_height": ("INT", {"default": 512, "min": 0, "max": 4096}),
                 "text": ("STRING", {"multiline": True, "default": "text"}),
                 "font_name": (file_list,),
                 "font_color": (COLORS,),
@@ -878,8 +878,8 @@ class CR_SimpleTextPanel:
                 "align": (ALIGN_OPTIONS,),
                 "justify": (JUSTIFY_OPTIONS,),
                 "wrap": ("BOOLEAN", {"default": False}),
-                "margins": ("INT", {"default": 50, "min": 0, "max": 1024}),         # ← Now user-controlled
-                "line_spacing": ("INT", {"default": 0, "min": -1024, "max": 1024}),   # ← Now user-controlled
+                "margins": ("INT", {"default": 50, "min": 0, "max": 1024}),
+                "line_spacing": ("INT", {"default": 0, "min": -1024, "max": 1024}),
             },
             "optional": {
                 "font_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
@@ -909,9 +909,7 @@ class CR_SimpleTextPanel:
         outline_color = get_color_values(font_outline_color, font_outline_color_hex, color_mapping)
         bg_color = get_color_values(background_color, bg_color_hex, color_mapping)
 
-        # Set defaults (no rotation, no offset)
-
-        # --- AUTO WORD WRAPPING ---
+        # --- AUTO WORD WRAPPING & SIZE ESTIMATION ---
         font_path = os.path.join("fonts", font_name)
         resolved_font_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), font_path)
         try:
@@ -920,12 +918,13 @@ class CR_SimpleTextPanel:
             font = ImageFont.load_default()
 
         draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-        wrapped_lines = []
 
+        # Process text (with optional wrapping)
         if wrap:
             words = text.split(' ')
+            lines = []
             line = ""
-            available_width = panel_width - 2 * margins
+            available_width = max(1, panel_width - 2 * margins)  # Avoid zero/negative
 
             for word in words:
                 test_line = f"{line} {word}".strip()
@@ -935,15 +934,36 @@ class CR_SimpleTextPanel:
                     line = test_line
                 else:
                     if line:
-                        wrapped_lines.append(line)
+                        lines.append(line)
                         line = word
                     else:
-                        wrapped_lines.append(word)
+                        lines.append(word)
             if line:
-                wrapped_lines.append(line)
-            processed_text = "\n".join(wrapped_lines)
+                lines.append(line)
+            processed_text = "\n".join(lines)
         else:
             processed_text = text
+            lines = processed_text.split('\n')
+
+        # Auto-calculate height if requested
+        if panel_height == 0:
+            total_text_height = 0
+            max_line_width = 0
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_h = bbox[3] - bbox[1] + line_spacing
+                line_w = bbox[2] - bbox[0]
+                total_text_height += line_h
+                max_line_width = max(max_line_width, line_w)
+
+            # Add margins and ensure minimum size
+            auto_height = int(total_text_height + 2 * margins)
+            panel_height = max(1, auto_height)  # Avoid zero/negative
+
+        panel_width = max(1, panel_width) if panel_width > 0 else 1
+
+        # Clamp margins to safe bounds
+        margins = min(margins, panel_height // 2, panel_width // 2)
 
         # --- CREATE TEXT PANEL ---
         panel = text_panel(
@@ -973,8 +993,8 @@ class CR_SimpleTextPanel:
         # --- BUILD SCENE GRAPH ---
         content_x = margins
         content_y = margins
-        content_w = panel_width - 2 * margins
-        content_h = panel_height - 2 * margins
+        content_w = max(0, panel_width - 2 * margins)
+        content_h = max(0, panel_height - 2 * margins)
 
         show_help_data = {
             "x": 0,
