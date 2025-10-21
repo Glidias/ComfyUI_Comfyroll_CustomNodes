@@ -65,6 +65,7 @@ NODE_CLASS_MAPPINGS = {
     "CR Binary To Bit List": CR_BinaryToBitList,
     "CR Text Cycler": CR_TextCycler,
     "CR Value Cycler": CR_ValueCycler,
+    "CR XML To Element List": CR_XMLToList,
     ### List IO
     "CR Load Image List": CR_LoadImageList,
     "CR Load Image List Plus": CR_LoadImageListPlus,

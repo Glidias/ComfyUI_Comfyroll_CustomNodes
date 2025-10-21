@@ -3,6 +3,7 @@
 # for ComfyUI                                                 https://github.com/comfyanonymous/ComfyUI                                               
 #---------------------------------------------------------------------------------------------------------------------#
 
+import json
 import torch
 import numpy as np
 import os
@@ -17,6 +18,7 @@ from PIL import Image, ImageSequence
 from pathlib import Path
 from itertools import product
 from ..categories import icons
+import xml.etree.ElementTree as ET
 
 def tensor2pil(image):
     return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
@@ -831,6 +833,84 @@ class CR_ValueCycler:
                         int_list_out.append(int(float(text_item)))  # Convert to int after parsing as float
 
         return (float_list_out, int_list_out, show_help, )    
+
+#---------------------------------------------------------------------------------------------------------------------#
+class CR_XMLToList:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "xml_string": ("STRING", {"multiline": True, "default": "<root><item>Text</item></root>"}),
+            },
+            "optional": {
+                "preset_attributes_json": ("STRING", {"multiline": True}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("element_json_list",)
+    OUTPUT_IS_LIST = (True,)
+    FUNCTION = "parse_xml"
+    CATEGORY = "Comfyroll/Utils"
+
+    def parse_xml(self, xml_string, preset_attributes_json=None):
+        # Normalize preset input: empty/whitespace → None
+        if preset_attributes_json is None or not preset_attributes_json.strip():
+            preset_dict = {}
+        else:
+            try:
+                preset_dict = json.loads(preset_attributes_json)
+            except json.JSONDecodeError as e:
+                print(f"[CR_XMLToList] Invalid preset JSON: {e}")
+                preset_dict = {}
+
+        # Parse XML
+        try:
+            root = ET.fromstring(xml_string.strip())
+        except ET.ParseError as e:
+            raise ValueError(f"[CR_XMLToList] Invalid XML: {e}")
+
+        result = []
+        stack = [(root, [])]  # (element, list of ancestor attrib dicts)
+
+        while stack:
+            elem, ancestor_attrs = stack.pop()
+            own = elem.attrib
+            tag = elem.tag
+            record = {"__key": tag}
+
+            # Own attributes
+            for k, v in own.items():
+                record[k] = v
+
+            # Text (including CDATA)
+            if elem.text and (text_clean := elem.text.strip()):
+                record["#text"] = text_clean
+
+            # Inherited from real ancestors (parent → root)
+            emitted_keys = set(own.keys())
+            for attrs in reversed(ancestor_attrs):
+                for k, v in attrs.items():
+                    if k not in emitted_keys:
+                        emitted_keys.add(k)
+                        record[k] = v
+
+            # Apply presets (lowest priority)
+            preset_attrs = preset_dict.get(tag, {})
+            for k, v in preset_attrs.items():
+                if k not in emitted_keys:
+                    record[k] = v
+
+            result.append(record)
+
+            # Push children
+            new_ancestors = ancestor_attrs + [own]
+            for child in reversed(elem):
+                stack.append((child, new_ancestors))
+
+        # Convert to JSON strings
+        json_strings = [json.dumps(item, separators=(',', ':')) for item in result]
+        return (json_strings,)
 
 #---------------------------------------------------------------------------------------------------------------------#
 # MAPPINGS
