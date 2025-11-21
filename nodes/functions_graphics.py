@@ -64,12 +64,12 @@ def justify_text(justify, img_width, line_width, margins):
 
 def get_text_size(draw, text, font):
     bbox = draw.textbbox((0, 0), text, font=font)
-
+    
     # Calculate the text width and height
     text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
-    return text_width, text_height
-
+    ascent, descent = font.getmetrics()
+    line_height = ascent + descent
+    return text_width, line_height
 
 def draw_masked_text(text_mask, text,
                      font_name, font_size,
