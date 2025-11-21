@@ -747,7 +747,8 @@ class CR_ImageGridPanel:
                     "max_columns": ("INT", {"default": 5, "min": 0, "max": 256}),
                 },
                 "optional": {
-                    "border_color_hex": ("STRING", {"multiline": False, "default": "#000000"})
+                    "border_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
+                    "row_gap": ("INT", {"default": 0, "min": 0, "max": 1024}),
                 }
     }
 
@@ -759,7 +760,7 @@ class CR_ImageGridPanel:
     def make_panel(self, images,
                    border_thickness, border_color,
                    outline_thickness, outline_color,
-                   max_columns, border_color_hex='#000000'):
+                   max_columns, border_color_hex='#000000', row_gap=0):
 
         border_color = get_color_values(border_color, border_color_hex, color_mapping)
 
@@ -771,7 +772,7 @@ class CR_ImageGridPanel:
         # Apply borders and outlines to each image
         images = apply_outline_and_border(images, outline_thickness, outline_color, border_thickness, border_color)
 
-        combined_image, combined_images_positions = make_grid_panel2(images, max_columns)
+        combined_image, combined_images_positions = make_grid_panel2(images, max_columns, row_gap)
         offset_padding = border_thickness + outline_thickness
 
         image_out = pil2tensor(combined_image)

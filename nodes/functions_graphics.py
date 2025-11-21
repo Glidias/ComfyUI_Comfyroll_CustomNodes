@@ -619,7 +619,7 @@ def make_grid_panel(images, max_columns):
     return combined_image
 
 
-def make_grid_panel2(images, max_columns):
+def make_grid_panel2(images, max_columns, row_gap):
      # Calculate dimensions for the grid
     num_images = len(images)
     num_rows = (num_images - 1) // max_columns + 1
@@ -636,7 +636,7 @@ def make_grid_panel2(images, max_columns):
         x_offset += image.width
         if x_offset >= max_columns * image.width:
             x_offset = 0
-            y_offset += image.height
+            y_offset += image.height + row_gap
 
     return (combined_image, positions)
 
